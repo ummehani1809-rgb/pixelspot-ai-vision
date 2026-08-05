@@ -1,0 +1,2 @@
+# pixelspot-ai-vision
+
