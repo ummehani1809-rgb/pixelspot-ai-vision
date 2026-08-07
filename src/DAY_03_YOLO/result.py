@@ -4,7 +4,7 @@ import time
 
 
 
-model = YOLO("yolo11l.pt")
+model = YOLO("yolo11n.pt")
 
 
  #Webcam
@@ -26,10 +26,12 @@ while True:
     if not success:
         print("Video Finished!")
         break
-    img = cv2.resize(img, (960, 540))
+    img = cv2.resize(img, (1280, 720))
 
     # Run YOLO
-    results = model(img, stream=True)
+    results = model(
+    img,
+    stream= True)
 
     person_count = 0
     vehicle_count = 0
