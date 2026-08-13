@@ -1,0 +1,10 @@
+features:
+  footfall: true
+  attention: true
+  gender: true
+  age: true
+  mood: false
+  vehicles: true
+
+ccms:
+  enabled: false
