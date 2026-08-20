@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -48,6 +49,9 @@ class Track:
     # Filled by head-pose enrichment when enabled: 0 = facing the camera,
     # +/-90 = profile, 180 = facing away, None = not estimated.
     head_yaw_deg: float | None = None
+    # Filled by face enrichment on detection frames: a BGR crop of this
+    # person's face, held in memory for classification only -- never stored.
+    face_crop: Any = None
 
     @property
     def center(self) -> tuple[float, float]:

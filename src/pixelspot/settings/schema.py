@@ -26,10 +26,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-# Attribute backends that actually exist. Phase 5 extends this set; until then a
-# config asking for "insightface" is a configuration error rather than a feature
-# that silently never runs.
-KNOWN_ATTRIBUTE_BACKENDS = frozenset({"none"})
+# Attribute backends that actually exist. A config asking for "insightface" is
+# a configuration error rather than a feature that silently never runs.
+KNOWN_ATTRIBUTE_BACKENDS = frozenset({"none", "opencv_dnn"})
 
 _DURATION_RE = re.compile(r"^(\d+)(s|m|h|d)$")
 _DURATION_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}

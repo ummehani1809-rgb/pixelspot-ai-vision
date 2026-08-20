@@ -21,7 +21,7 @@ from collections import deque
 from pixelspot.aggregation.aggregator import Aggregator
 from pixelspot.analytics.base import FrameContext
 from pixelspot.analytics.registry import build_processors
-from pixelspot.enrichment import HeadPoseEstimator
+from pixelspot.enrichment import FaceFinder, HeadPoseEstimator
 from pixelspot.geometry import ResolvedGeometry
 from pixelspot.logging_setup import get_logger
 from pixelspot.render import Renderer
@@ -102,11 +102,11 @@ def run_pipeline(config: PixelSpotConfig) -> int:
     )
 
     tracker = Tracker.from_config(config)
-    enricher = (
-        HeadPoseEstimator.from_config(config)
-        if config.perception.enrichment.head_pose.enabled
-        else None
-    )
+    enrichers = []
+    if config.perception.enrichment.head_pose.enabled:
+        enrichers.append(HeadPoseEstimator.from_config(config))
+    if config.perception.enrichment.face.enabled:
+        enrichers.append(FaceFinder.from_config(config))
     processors = build_processors(config, geometry)
     aggregator = Aggregator.from_config(config)
     sinks = SinkGroup.from_config(config)
@@ -126,7 +126,7 @@ def run_pipeline(config: PixelSpotConfig) -> int:
         while True:
             pacer.tick()
             tracks = tracker.track(frame, time.time())
-            if enricher is not None:
+            for enricher in enrichers:
                 enricher.enrich(frame, tracks, frame_index)
             context = FrameContext(
                 index=frame_index,

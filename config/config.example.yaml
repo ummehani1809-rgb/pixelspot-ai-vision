@@ -58,7 +58,7 @@ perception:
       every_n_frames: 2
       min_keypoint_confidence: 0.4
     face:
-      enabled: false        # Phase 5. Required by gender/age/mood backends.
+      enabled: false        # Required by gender/age/mood real backends.
       min_size_px: 32
       every_n_frames: 5
 
@@ -168,9 +168,12 @@ analytics:
     screen: screen_a
     max_distance_m: 8.0
 
-  # --- Phase 5: need a face backend ----------------------------------
-  # backend 'none' is the only one implemented. Setting a real backend while
-  # perception.enrichment.face is off is rejected at startup.
+  # --- need perception.enrichment.face + a backend ---------------------
+  # Backends: none | opencv_dnn. opencv_dnn runs entirely on OpenCV with
+  # models in models/ (gender_googlenet.onnx, age_googlenet.onnx, FER+ and
+  # YuNet from the official model zoos). Setting a real backend while
+  # perception.enrichment.face is off is rejected at startup. Biometric
+  # processing: see the privacy section below.
   gender:
     enabled: false
     backend: none

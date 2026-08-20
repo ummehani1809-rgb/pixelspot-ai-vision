@@ -51,13 +51,12 @@ Environment overrides use `__` between levels, e.g.
 
 ## Capabilities
 
-| Status | Capabilities |
-| --- | --- |
-| ✅ Working today | footfall (line crossing), viewing_zone occupancy, vehicle counting/classification, dwell time, crowd_density (people/m²), traffic_direction, queue detection, audience_flow (zone-to-zone), heatmap, parking bays, anomaly rules, attention & screen_visibility (head-pose enrichment) |
-| ⏳ Phase 5 remainder | gender/age/mood (face backend) |
+All 16 capabilities are implemented:
 
-Enabling a capability that is not implemented yet logs a warning and is
-skipped, so a full deployment config can be written once and grow into.
+- **Counting & presence** — footfall (line crossing), viewing_zone occupancy, vehicle counting/classification
+- **Derived from tracks + zones + time** — dwell time, crowd_density (people/m²), traffic_direction, queue detection, audience_flow (zone-to-zone), heatmap, parking bays, anomaly rules
+- **Head pose** (`perception.enrichment.head_pose`) — attention (sustained gaze at a screen), screen_visibility
+- **Face attributes** (`perception.enrichment.face` + `backend: opencv_dnn`) — gender, age buckets, mood; classified via OpenCV DNN models (YuNet, GoogleNet age/gender, FER+) with per-person vote-over-time smoothing
 
 ## Privacy
 

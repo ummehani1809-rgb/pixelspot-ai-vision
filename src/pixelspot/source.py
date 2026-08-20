@@ -24,6 +24,7 @@ and dropping frames from a recording would silently change the counts.
 from __future__ import annotations
 
 import queue
+import sys
 import threading
 import time
 from typing import Any
@@ -83,7 +84,7 @@ class VideoSource:
 
         while True:
             attempt += 1
-            capture = cv2.VideoCapture(self.target)
+            capture = self._open_capture()
             if capture.isOpened():
                 self._capture = capture
                 if self.is_live:
@@ -116,6 +117,43 @@ class VideoSource:
             )
             time.sleep(backoff)
             backoff = min(backoff * 2, reconnect.max_backoff_s)
+
+    def _open_capture(self) -> cv2.VideoCapture:
+        """Open the capture, working around wedged webcam backends.
+
+        On Windows the default backend (Media Foundation) can enter a state
+        where the camera *opens* but never delivers a frame -- typically
+        after a process holding it was killed. A capture that cannot produce
+        one probe frame is useless however open it claims to be, so webcams
+        are probed and the DirectShow backend is tried before giving up.
+        """
+        if self.config.type != "webcam":
+            return cv2.VideoCapture(self.target)
+
+        backends = [("default", cv2.CAP_ANY)]
+        if sys.platform == "win32":
+            backends.append(("DirectShow", cv2.CAP_DSHOW))
+
+        capture = None
+        for name, backend in backends:
+            capture = cv2.VideoCapture(self.target, backend)
+            if not capture.isOpened():
+                capture.release()
+                continue
+            success, _ = capture.read()
+            if success:
+                return capture
+            log.warning(
+                "webcam %s opened via %s but delivered no frame; %s",
+                self.target,
+                name,
+                "trying next backend" if backend != backends[-1][1] else "giving up",
+            )
+            capture.release()
+
+        # Nothing produced a frame; hand back a closed capture so the
+        # caller's retry/backoff path takes over.
+        return capture if capture is not None else cv2.VideoCapture(self.target)
 
     def read(self):
         """Return the next frame, or ``None`` when the source is finished."""
