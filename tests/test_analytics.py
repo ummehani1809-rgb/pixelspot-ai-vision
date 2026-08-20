@@ -17,6 +17,7 @@ from pixelspot.analytics.base import FrameContext
 from pixelspot.analytics.crossing import LineCrossingCounter
 from pixelspot.analytics.crowd_density import CrowdDensityProcessor
 from pixelspot.analytics.dwell import DwellProcessor
+from pixelspot.analytics.heatmap import HeatmapProcessor
 from pixelspot.analytics.registry import build_processors
 from pixelspot.analytics.vehicle import VehicleProcessor
 from pixelspot.analytics.viewing_zone import ViewingZoneProcessor
@@ -427,6 +428,54 @@ def test_a_zone_without_an_area_is_rejected_by_the_config():
 
 
 # ==================================================================
+# HEATMAP
+# ==================================================================
+
+
+def build_heatmap(**settings):
+    analytics = dict(CONFIG["analytics"])
+    analytics["heatmap"] = {"enabled": True, "grid": [10, 10], **settings}
+    config = build_config(analytics=analytics)
+    return HeatmapProcessor.from_config(config, build_geometry(config))
+
+
+def test_presence_accumulates_in_the_cell_under_the_person():
+    heatmap = build_heatmap(decay=1.0)  # no fade, pure accumulation
+
+    for index in range(3):
+        output = heatmap.process(context([track(1, 250, 250)], index=index))
+
+    # (250, 250) in a 1000x1000 frame on a 10x10 grid is cell (2, 2).
+    assert output.metrics["hot_cells"][0] == {"x": 2, "y": 2, "weight": 3.0}
+    assert output.metrics["max_weight"] == 3.0
+
+
+def test_decay_cools_a_spot_nobody_stands_in():
+    heatmap = build_heatmap(decay=0.5)
+
+    heatmap.process(context([track(1, 250, 250)]))
+    output = heatmap.process(context([]))  # everyone left
+
+    assert output.metrics["max_weight"] == 0.5
+
+
+def test_empty_scene_reports_no_hot_cells():
+    heatmap = build_heatmap()
+
+    output = heatmap.process(context([]))
+
+    assert output.metrics["hot_cells"] == []
+    assert heatmap.overlay_lines(output.metrics) == ["Heatmap: quiet"]
+
+
+def test_unavailable_weight_mode_falls_back_to_presence(caplog):
+    heatmap = build_heatmap(weight_by="attention")
+
+    assert isinstance(heatmap, HeatmapProcessor)
+    assert "using 'presence'" in caplog.text
+
+
+# ==================================================================
 # REGISTRY
 # ==================================================================
 
@@ -455,12 +504,12 @@ def test_disabling_a_capability_removes_it_from_the_pipeline():
 
 def test_enabled_but_unimplemented_capability_warns_instead_of_failing(caplog):
     analytics = dict(CONFIG["analytics"])
-    analytics["heatmap"] = {"enabled": True}
+    analytics["traffic_direction"] = {"enabled": True}
     config = build_config(analytics=analytics)
 
     processors = build_processors(config, build_geometry(config))
 
-    assert "heatmap" not in [processor.name for processor in processors]
+    assert "traffic_direction" not in [processor.name for processor in processors]
     assert "no implementation yet" in caplog.text
 
 

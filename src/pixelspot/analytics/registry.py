@@ -19,6 +19,7 @@ from pixelspot.analytics.base import Processor
 from pixelspot.analytics.crowd_density import CrowdDensityProcessor
 from pixelspot.analytics.dwell import DwellProcessor
 from pixelspot.analytics.footfall import FootfallProcessor
+from pixelspot.analytics.heatmap import HeatmapProcessor
 from pixelspot.analytics.vehicle import VehicleProcessor
 from pixelspot.analytics.viewing_zone import ViewingZoneProcessor
 from pixelspot.geometry import ResolvedGeometry
@@ -34,6 +35,7 @@ BUILDERS: dict[str, Builder] = {
     "viewing_zone": ViewingZoneProcessor.from_config,
     "dwell": DwellProcessor.from_config,
     "crowd_density": CrowdDensityProcessor.from_config,
+    "heatmap": HeatmapProcessor.from_config,
     "vehicles": VehicleProcessor.from_config,
 }
 
