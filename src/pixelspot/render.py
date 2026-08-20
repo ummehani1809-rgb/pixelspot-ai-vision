@@ -45,6 +45,11 @@ TEXT_COLOUR = (255, 255, 255)
 # Fraction of a person box treated as the head when blurring.
 _HEAD_FRACTION = 0.28
 
+# Overlay sizes below are authored for a frame whose short side is this many
+# pixels; larger frames scale everything up so the text stays readable once
+# the window is shrunk to fit the screen.
+_REFERENCE_SHORT_SIDE = 720.0
+
 
 class Renderer:
     """Draws the preview window, or does nothing at all when headless."""
@@ -62,6 +67,11 @@ class Renderer:
         self.show_fps = config.runtime.show_fps
         self.blur_faces = config.privacy.blur_faces_in_output
         self._window_open = False
+        self._scale = 1.0
+
+    def _px(self, value: float) -> int:
+        """A length authored for the reference frame, scaled to this one."""
+        return max(1, int(round(value * self._scale)))
 
     # ------------------------------------------------------------------
     # Drawing
@@ -74,6 +84,9 @@ class Renderer:
         metrics: dict[str, dict[str, Any]],
         fps: float | None = None,
     ):
+        height, width = frame.shape[:2]
+        self._scale = max(1.0, min(width, height) / _REFERENCE_SHORT_SIDE)
+
         if self.blur_faces:
             self._blur_heads(frame, tracks)
 
@@ -108,41 +121,44 @@ class Renderer:
             for index in range(len(points)):
                 cv2.line(
                     frame, points[index], points[(index + 1) % len(points)],
-                    ZONE_COLOUR, 2,
+                    ZONE_COLOUR, self._px(2),
                 )
             label_at = min(points, key=lambda point: (point[1], point[0]))
             cv2.putText(
-                frame, zone.id, (label_at[0], max(label_at[1] - 8, 16)),
-                FONT, 0.5, ZONE_COLOUR, 1,
+                frame, zone.id,
+                (label_at[0], max(label_at[1] - self._px(8), self._px(16))),
+                FONT, 0.5 * self._scale, ZONE_COLOUR, self._px(1),
             )
 
     def _draw_lines(self, frame) -> None:
         for line in self.geometry.lines.values():
             p1 = (int(line.p1[0]), int(line.p1[1]))
             p2 = (int(line.p2[0]), int(line.p2[1]))
-            cv2.line(frame, p1, p2, LINE_COLOUR, 3)
+            cv2.line(frame, p1, p2, LINE_COLOUR, self._px(3))
 
             # Arrow showing which direction counts as positive.
-            start, end = line.positive_arrow()
+            start, end = line.positive_arrow(length_px=self._px(40))
             cv2.arrowedLine(
                 frame,
                 (int(start[0]), int(start[1])),
                 (int(end[0]), int(end[1])),
-                LINE_COLOUR, 2, tipLength=0.35,
+                LINE_COLOUR, self._px(2), tipLength=0.35,
             )
             cv2.putText(
-                frame, line.id, (int(start[0]) + 8, int(start[1]) - 8),
-                FONT, 0.6, TEXT_COLOUR, 2,
+                frame, line.id,
+                (int(start[0]) + self._px(8), int(start[1]) - self._px(8)),
+                FONT, 0.6 * self._scale, TEXT_COLOUR, self._px(2),
             )
 
     def _draw_tracks(self, frame, tracks: list[Track]) -> None:
         for track in tracks:
             x1, y1, x2, y2 = track.bbox
             colour = CLASS_COLOURS.get(track.label.lower(), DEFAULT_COLOUR)
-            cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), colour, self._px(2))
             cv2.putText(
-                frame, f"{track.label} #{track.id}", (x1, max(y1 - 10, 20)),
-                FONT, 0.5, TEXT_COLOUR, 2,
+                frame, f"{track.label} #{track.id}",
+                (x1, max(y1 - self._px(10), self._px(20))),
+                FONT, 0.5 * self._scale, TEXT_COLOUR, self._px(2),
             )
 
     def _draw_hud(
@@ -158,14 +174,19 @@ class Renderer:
             return
 
         # Dark panel behind the text so it stays readable over a bright scene.
-        panel_height = 20 + 35 * len(lines)
+        line_height = self._px(35)
+        panel_height = self._px(20) + line_height * len(lines)
         overlay = frame.copy()
-        cv2.rectangle(overlay, (10, 10), (330, panel_height), (0, 0, 0), -1)
+        cv2.rectangle(
+            overlay, (self._px(10), self._px(10)),
+            (self._px(330), panel_height), (0, 0, 0), -1,
+        )
         cv2.addWeighted(overlay, 0.45, frame, 0.55, 0, frame)
 
         for index, text in enumerate(lines):
             cv2.putText(
-                frame, text, (20, 45 + index * 35), FONT, 0.7, TEXT_COLOUR, 2
+                frame, text, (self._px(20), self._px(45) + index * line_height),
+                FONT, 0.7 * self._scale, TEXT_COLOUR, self._px(2),
             )
 
     # ------------------------------------------------------------------
