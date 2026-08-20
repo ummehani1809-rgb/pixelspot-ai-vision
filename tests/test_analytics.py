@@ -15,6 +15,7 @@ import pytest
 from pixelspot.aggregation.aggregator import Aggregator
 from pixelspot.analytics.base import FrameContext
 from pixelspot.analytics.crossing import LineCrossingCounter
+from pixelspot.analytics.dwell import DwellProcessor
 from pixelspot.analytics.registry import build_processors
 from pixelspot.analytics.vehicle import VehicleProcessor
 from pixelspot.analytics.viewing_zone import ViewingZoneProcessor
@@ -288,6 +289,93 @@ def test_vehicles_can_be_restricted_to_zones():
 
 
 # ==================================================================
+# DWELL
+# ==================================================================
+
+
+def build_dwell(**settings):
+    analytics = dict(CONFIG["analytics"])
+    analytics["dwell"] = {"enabled": True, "zones": ["storefront"], **settings}
+    config = build_config(analytics=analytics)
+    return DwellProcessor.from_config(config, build_geometry(config))
+
+
+def test_a_walkthrough_shorter_than_min_dwell_emits_nothing():
+    dwell = build_dwell(min_dwell_s=2.0)
+
+    dwell.process(context([track(1, 300, 300)], timestamp=100.0))
+    output = dwell.process(context([track(1, 800, 800)], timestamp=100.5))
+
+    assert output.events == []
+    assert output.metrics["completed_visits"] == 0
+
+
+def test_a_stay_past_min_dwell_emits_one_event_on_exit():
+    dwell = build_dwell(min_dwell_s=2.0)
+
+    dwell.process(context([track(1, 300, 300)], timestamp=100.0))
+    dwell.process(context([track(1, 310, 300)], timestamp=103.0))
+    output = dwell.process(context([track(1, 800, 800)], timestamp=104.0))
+
+    assert len(output.events) == 1
+    event = output.events[0]
+    assert event.type == "DWELL"
+    assert event.data == {"track_id": 1, "zone_id": "storefront", "dwell_s": 3.0}
+    assert output.metrics["completed_visits"] == 1
+    assert output.metrics["avg_dwell_s"] == 3.0
+
+
+def test_a_vanished_track_closes_only_after_tracker_retention():
+    # tracker max_age_s is 2.0 in CONFIG
+    dwell = build_dwell(min_dwell_s=2.0)
+
+    dwell.process(context([track(1, 300, 300)], timestamp=100.0))
+    dwell.process(context([track(1, 300, 300)], timestamp=103.0))
+
+    # Gone for 1s: could be an occlusion, the visit stays open.
+    output = dwell.process(context([], timestamp=104.0))
+    assert output.events == []
+
+    # Gone for 3s: the tracker itself would have dropped them. They left.
+    output = dwell.process(context([], timestamp=106.0))
+    assert len(output.events) == 1
+    assert output.events[0].data["dwell_s"] == 3.0
+
+
+def test_a_brief_occlusion_does_not_split_the_visit():
+    dwell = build_dwell(min_dwell_s=2.0)
+
+    dwell.process(context([track(1, 300, 300)], timestamp=100.0))
+    dwell.process(context([], timestamp=101.0))  # hidden, within retention
+    dwell.process(context([track(1, 300, 300)], timestamp=102.0))
+    output = dwell.process(context([track(1, 800, 800)], timestamp=104.0))
+
+    assert len(output.events) == 1
+    assert output.events[0].data["dwell_s"] == 2.0
+
+
+def test_dwell_duration_is_capped_at_max():
+    dwell = build_dwell(min_dwell_s=2.0, max_dwell_s=5.0)
+
+    dwell.process(context([track(1, 300, 300)], timestamp=100.0))
+    dwell.process(context([track(1, 300, 300)], timestamp=200.0))
+    output = dwell.process(context([track(1, 800, 800)], timestamp=201.0))
+
+    assert output.events[0].data["dwell_s"] == 5.0
+
+
+def test_currently_dwelling_needs_min_dwell_first():
+    dwell = build_dwell(min_dwell_s=2.0)
+
+    output = dwell.process(context([track(1, 300, 300)], timestamp=100.0))
+    assert output.metrics["currently_dwelling"] == 0
+
+    output = dwell.process(context([track(1, 300, 300)], timestamp=103.0))
+    assert output.metrics["currently_dwelling"] == 1
+    assert output.metrics["per_zone_dwelling"] == {"storefront": 1}
+
+
+# ==================================================================
 # REGISTRY
 # ==================================================================
 
@@ -316,12 +404,12 @@ def test_disabling_a_capability_removes_it_from_the_pipeline():
 
 def test_enabled_but_unimplemented_capability_warns_instead_of_failing(caplog):
     analytics = dict(CONFIG["analytics"])
-    analytics["dwell"] = {"enabled": True, "zones": ["storefront"]}
+    analytics["heatmap"] = {"enabled": True}
     config = build_config(analytics=analytics)
 
     processors = build_processors(config, build_geometry(config))
 
-    assert "dwell" not in [processor.name for processor in processors]
+    assert "heatmap" not in [processor.name for processor in processors]
     assert "no implementation yet" in caplog.text
 
 
