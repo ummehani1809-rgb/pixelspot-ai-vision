@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Callable
 
 from pixelspot.analytics.base import Processor
+from pixelspot.analytics.crowd_density import CrowdDensityProcessor
 from pixelspot.analytics.dwell import DwellProcessor
 from pixelspot.analytics.footfall import FootfallProcessor
 from pixelspot.analytics.vehicle import VehicleProcessor
@@ -32,6 +33,7 @@ BUILDERS: dict[str, Builder] = {
     "footfall": FootfallProcessor.from_config,
     "viewing_zone": ViewingZoneProcessor.from_config,
     "dwell": DwellProcessor.from_config,
+    "crowd_density": CrowdDensityProcessor.from_config,
     "vehicles": VehicleProcessor.from_config,
 }
 

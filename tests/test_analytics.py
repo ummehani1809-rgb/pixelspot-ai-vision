@@ -15,6 +15,7 @@ import pytest
 from pixelspot.aggregation.aggregator import Aggregator
 from pixelspot.analytics.base import FrameContext
 from pixelspot.analytics.crossing import LineCrossingCounter
+from pixelspot.analytics.crowd_density import CrowdDensityProcessor
 from pixelspot.analytics.dwell import DwellProcessor
 from pixelspot.analytics.registry import build_processors
 from pixelspot.analytics.vehicle import VehicleProcessor
@@ -373,6 +374,56 @@ def test_currently_dwelling_needs_min_dwell_first():
     output = dwell.process(context([track(1, 300, 300)], timestamp=103.0))
     assert output.metrics["currently_dwelling"] == 1
     assert output.metrics["per_zone_dwelling"] == {"storefront": 1}
+
+
+# ==================================================================
+# CROWD DENSITY
+# ==================================================================
+
+
+def build_density(**settings):
+    analytics = dict(CONFIG["analytics"])
+    analytics["crowd_density"] = {
+        "enabled": True,
+        "zones": ["storefront"],
+        "zone_areas_m2": {"storefront": 10.0},
+        **settings,
+    }
+    config = build_config(analytics=analytics)
+    return CrowdDensityProcessor.from_config(config, build_geometry(config))
+
+
+def test_density_is_people_divided_by_configured_area():
+    density = build_density()  # thresholds: low 0.3, medium 0.7, high 1.2
+
+    output = density.process(
+        context([track(i, 300, 300) for i in range(4)])  # 4 people / 10 m2
+    )
+
+    zone = output.metrics["per_zone"]["storefront"]
+    assert zone == {"count": 4, "density": 0.4, "level": "low"}
+    assert output.metrics["level"] == "low"
+
+
+def test_each_level_change_is_one_event_named_after_the_level():
+    density = build_density()
+
+    first = density.process(context([track(i, 300, 300) for i in range(8)]))
+    assert [event.type for event in first.events] == ["DENSITY_MEDIUM"]
+
+    # Same level again: no new event.
+    steady = density.process(context([track(i, 300, 300) for i in range(8)]))
+    assert steady.events == []
+
+    # Crowd grows past the high threshold: one event.
+    surge = density.process(context([track(i, 300, 300) for i in range(13)]))
+    assert [event.type for event in surge.events] == ["DENSITY_HIGH"]
+    assert surge.events[0].data["zone_id"] == "storefront"
+
+
+def test_a_zone_without_an_area_is_rejected_by_the_config():
+    with pytest.raises(Exception, match="zone_areas_m2 has no entry"):
+        build_density(zone_areas_m2={})
 
 
 # ==================================================================
