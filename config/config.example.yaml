@@ -52,7 +52,7 @@ perception:
     min_hits: 3
   enrichment:
     head_pose:
-      enabled: false        # Phase 5. Required by attention + screen_visibility.
+      enabled: false        # Required by attention + screen_visibility.
       backend: pose_keypoints
       model: models/yolo11n-pose.pt
       every_n_frames: 2
@@ -155,7 +155,7 @@ analytics:
     enabled: false
     rules: []
 
-  # --- Phase 5: need head pose ---------------------------------------
+  # --- need perception.enrichment.head_pose switched on ---------------
   attention:
     enabled: false
     zones: [storefront]
