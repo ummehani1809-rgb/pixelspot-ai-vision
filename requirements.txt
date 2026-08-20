@@ -1,0 +1,15 @@
+# PixelSpot runtime dependencies.
+#
+#   pip install -r requirements.txt
+#
+# For GPU inference install the CUDA build of torch FIRST, otherwise pip
+# resolves the CPU-only wheel via ultralytics:
+#
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+
+ultralytics>=8.3,<9      # YOLO detection + ByteTrack/BoT-SORT tracking
+opencv-python>=4.10      # video I/O and rendering
+numpy>=1.26
+pyyaml>=6.0              # config file parsing
+pydantic>=2.7,<3         # config schema + validation
+lap>=0.5                 # linear assignment, required by ByteTrack

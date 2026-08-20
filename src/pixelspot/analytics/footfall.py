@@ -1,187 +1,95 @@
-import time
+"""Footfall counting.
+
+Counts people across the lines named in ``analytics.footfall.lines``, in both
+directions. Crossing a line in its configured ``positive`` direction is an
+entry; the other way is an exit.
+
+Nothing about the counting rule is written here. The line geometry comes from
+``geometry.lines``, the anti-jitter rules from ``analytics.footfall``, and the
+crossing arithmetic from :mod:`pixelspot.analytics.crossing`. This class only
+decides what the two directions *mean* -- entries, exits, occupancy, peak --
+which is the part that is specific to footfall.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from pixelspot.analytics.base import BaseProcessor, FrameContext, ProcessorOutput
+from pixelspot.analytics.crossing import LineCrossingCounter
+from pixelspot.geometry import ResolvedGeometry
+from pixelspot.settings.schema import PixelSpotConfig
 
 
-class FootfallProcessor:
+class FootfallProcessor(BaseProcessor):
+    name = "footfall"
 
-    def __init__(self, line_y=400):
-
-        # Position of counting line
-        self.line_y = line_y
-
-        # Total crossing events
-        self.people_entered = 0
-        self.people_exited = 0
-
-        # Highest occupancy observed
+    def __init__(
+        self,
+        counters: list[LineCrossingCounter],
+        classes: tuple[str, ...] = ("person",),
+    ):
+        self.counters = counters
+        self.classes = classes
         self.peak_count = 0
 
-        # History for active tracking IDs
-        self.track_history = {}
-
-        # How long to remember a temporarily
-        # missing tracking ID
-        self.track_timeout = 5.0
-
-    # ==================================================
-    # DETERMINE WHICH SIDE OF THE LINE
-    # ==================================================
-
-    def get_side(self, center_y):
-
-        if center_y < self.line_y:
-            return "above"
-
-        return "below"
-
-    # ==================================================
-    # PROCESS CURRENT TRACKS
-    # ==================================================
-
-    def process(self, tracks):
-
-        current_time = time.time()
-
-        current_ids = set()
-
-        events = []
-
-        # ==================================================
-        # PROCESS EVERY TRACK
-        # ==================================================
-
-        for track in tracks:
-
-            track_id = track["id"]
-
-            center_y = track["center_y"]
-
-            current_ids.add(track_id)
-
-            current_side = self.get_side(center_y)
-
-            # ==================================================
-            # NEW TRACK
-            # ==================================================
-
-            if track_id not in self.track_history:
-
-                self.track_history[track_id] = {
-
-                    "previous_y": center_y,
-
-                    "side": current_side,
-
-                    "last_seen": current_time
-                }
-
-                continue
-
-            # ==================================================
-            # EXISTING TRACK
-            # ==================================================
-
-            previous_side = (
-                self.track_history[track_id]["side"]
+    @classmethod
+    def from_config(
+        cls, config: PixelSpotConfig, geometry: ResolvedGeometry
+    ) -> "FootfallProcessor":
+        settings = config.analytics.footfall
+        counters = [
+            LineCrossingCounter(
+                line=geometry.line(line_id),
+                hysteresis_px=settings.hysteresis_px,
+                min_track_age_frames=settings.min_track_age_frames,
+                cooldown_s=settings.cooldown_s,
+                retention_s=config.perception.tracker.max_age_s,
             )
+            for line_id in settings.lines
+        ]
+        return cls(counters=counters, classes=tuple(settings.classes))
 
-            # ==================================================
-            # ENTER
-            # ==================================================
+    def process(self, context: FrameContext) -> ProcessorOutput:
+        people = context.of_classes(self.classes)
+        output = ProcessorOutput()
 
-            if (
-                previous_side == "above"
-                and current_side == "below"
-            ):
-
-                self.people_entered += 1
-
-                events.append({
-                    "type": "ENTER",
-                    "track_id": track_id
-                })
-
-            # ==================================================
-            # EXIT
-            # ==================================================
-
-            elif (
-                previous_side == "below"
-                and current_side == "above"
-            ):
-
-                self.people_exited += 1
-
-                events.append({
-                    "type": "EXIT",
-                    "track_id": track_id
-                })
-
-            # ==================================================
-            # UPDATE HISTORY
-            # ==================================================
-
-            self.track_history[track_id] = {
-
-                "previous_y": center_y,
-
-                "side": current_side,
-
-                "last_seen": current_time
+        per_line: dict[str, dict[str, int]] = {}
+        for counter in self.counters:
+            for crossing in counter.update(people, context.timestamp):
+                event_type = "ENTER" if crossing.direction == "positive" else "EXIT"
+                output.events.append(
+                    self._event(
+                        context,
+                        event_type,
+                        track_id=crossing.track_id,
+                        line_id=crossing.line_id,
+                    )
+                )
+            per_line[counter.line.id] = {
+                "entered": counter.positive,
+                "exited": counter.negative,
             }
 
-        # ==================================================
-        # REMOVE EXPIRED TRACKS
-        # ==================================================
+        entered = sum(counts["entered"] for counts in per_line.values())
+        exited = sum(counts["exited"] for counts in per_line.values())
+        occupancy = max(0, entered - exited)
+        self.peak_count = max(self.peak_count, occupancy)
 
-        expired_ids = []
-
-        for track_id, data in self.track_history.items():
-
-            if track_id not in current_ids:
-
-                time_missing = (
-                    current_time - data["last_seen"]
-                )
-
-                if time_missing > self.track_timeout:
-
-                    expired_ids.append(track_id)
-
-        for track_id in expired_ids:
-
-            del self.track_history[track_id]
-
-        # ==================================================
-        # CURRENT OCCUPANCY
-        # ==================================================
-
-        current_occupancy = max(
-            0,
-            self.people_entered - self.people_exited
-        )
-
-        # ==================================================
-        # PEAK
-        # ==================================================
-
-        self.peak_count = max(
-            self.peak_count,
-            current_occupancy
-        )
-
-        # ==================================================
-        # RETURN RESULTS
-        # ==================================================
-
-        return {
-
-            "people_entered": self.people_entered,
-
-            "people_exited": self.people_exited,
-
-            "current_occupancy": current_occupancy,
-
+        output.metrics = {
+            "people_entered": entered,
+            "people_exited": exited,
+            "current_occupancy": occupancy,
             "peak_count": self.peak_count,
-
-            "events": events
+            "people_present": len(people),
+            "per_line": per_line,
         }
+        return output
+
+    def overlay_lines(self, metrics: dict[str, Any]) -> list[str]:
+        return [
+            f"Entered: {metrics.get('people_entered', 0)}",
+            f"Exited: {metrics.get('people_exited', 0)}",
+            f"Occupancy: {metrics.get('current_occupancy', 0)}",
+            f"Peak: {metrics.get('peak_count', 0)}",
+        ]

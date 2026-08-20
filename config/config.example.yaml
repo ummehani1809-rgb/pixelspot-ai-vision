@@ -1,0 +1,227 @@
+# PixelSpot configuration - reference file.
+#
+# Copy to config.yaml and edit. Every value below is the built-in default
+# unless noted, so anything you delete simply falls back to the default.
+#
+# Layering, lowest priority first:
+#   built-in defaults  <  this file  <  config/sites/<name>.yaml  <  env  <  CLI
+#
+# Environment overrides use the field path with __ between levels:
+#   PIXELSPOT__RUNTIME__DEVICE=cuda:0
+#   PIXELSPOT__ANALYTICS__FOOTFALL__ENABLED=false
+#
+# Check a config without starting the camera:
+#   pixelspot validate-config --config config/config.example.yaml
+
+version: 1
+
+runtime:
+  device: auto              # auto | cpu | mps | cuda | cuda:0
+  headless: false           # true on a device with no display
+  target_fps: 15            # inference rate, independent of the source frame rate
+  log_level: INFO
+  log_file: null            # e.g. out/pixelspot.log
+  show_fps: true
+
+source:
+  type: file                # file | webcam | rtsp | http
+  uri: datasets/crowd.mp4   # relative paths resolve from the project root
+  loop: false
+  reconnect:                # applies to rtsp/http sources
+    enabled: true
+    initial_backoff_s: 1.0
+    max_backoff_s: 30.0
+    max_attempts: 0         # 0 = retry forever
+  buffer:
+    max_queue: 4
+    drop_policy: drop_oldest
+
+perception:
+  detector:
+    model: models/yolo11n.pt
+    imgsz: 640              # must be a multiple of 32
+    conf: 0.35
+    iou: 0.5
+    max_det: 300
+    half: false             # fp16, GPU only
+    classes: [person, car, motorcycle, bus, truck]
+  tracker:
+    type: bytetrack         # bytetrack | botsort
+    config: bytetrack.yaml
+    max_age_s: 2.0
+    min_hits: 3
+  enrichment:
+    head_pose:
+      enabled: false        # Phase 5. Required by attention + screen_visibility.
+      backend: pose_keypoints
+      model: models/yolo11n-pose.pt
+      every_n_frames: 2
+      min_keypoint_confidence: 0.4
+    face:
+      enabled: false        # Phase 5. Required by gender/age/mood backends.
+      min_size_px: 32
+      every_n_frames: 5
+
+geometry:
+  # Normalized coordinates (0.0-1.0) so one config works at any resolution.
+  coordinate_space: normalized
+
+  zones:
+    - id: storefront
+      points: [[0.104, 0.139], [0.313, 0.139], [0.313, 0.463], [0.104, 0.463]]
+      tags: [viewing]
+
+  lines:
+    - id: entrance
+      p1: [0.0, 0.370]
+      p2: [1.0, 0.370]
+      positive: down        # crossing downwards counts as an entry
+      classes: [person]
+
+  screens:
+    - id: screen_a
+      position: [0.5, 0.05]
+      facing: [0.0, 1.0]
+      fov_deg: 120
+      max_distance_m: 8.0
+
+analytics:
+  # --- working today -------------------------------------------------
+  footfall:
+    enabled: true
+    lines: [entrance]
+    classes: [person]
+    hysteresis_px: 12       # travel required past the line before counting
+    min_track_age_frames: 3 # ignore brand new tracks, they are often noise
+    cooldown_s: 1.0         # one count per track per second, guards ID reuse
+
+  viewing_zone:
+    enabled: true
+    zones: [storefront]
+    classes: [person]
+
+  vehicles:
+    enabled: true
+    classes: [car, motorcycle, bus, truck]
+    classify: true
+    zones: []
+    lines: []
+
+  # --- Phase 4: derived from tracks + zones + time, no new model ------
+  dwell:
+    enabled: false
+    zones: [storefront]
+    min_dwell_s: 2.0
+    max_dwell_s: 3600.0
+
+  crowd_density:
+    enabled: false
+    zones: [storefront]
+    zone_areas_m2:
+      storefront: 24.0      # real-world floor area, required for people/m2
+    levels: {low: 0.3, medium: 0.7, high: 1.2}
+
+  traffic_direction:
+    enabled: false
+    smoothing_frames: 8
+    bins: 8
+    min_speed_px_s: 15.0
+
+  queue:
+    enabled: false
+    zones: [storefront]
+    min_people: 3
+    min_dwell_s: 10.0
+    cluster_radius_px: 120
+
+  audience_flow:
+    enabled: false
+    zones: [storefront]
+    min_transition_s: 0.5
+
+  heatmap:
+    enabled: false
+    grid: [64, 36]
+    decay: 0.98
+    weight_by: presence     # presence | attention | dwell
+
+  parking:
+    enabled: false
+    bays: []                # zone ids tagged 'parking'
+    occupied_after_s: 30.0
+    vacated_after_s: 15.0
+
+  anomaly:
+    enabled: false
+    rules: []
+
+  # --- Phase 5: need head pose ---------------------------------------
+  attention:
+    enabled: false
+    zones: [storefront]
+    screen: screen_a
+    yaw_tolerance_deg: 35.0
+    min_gaze_s: 1.0
+
+  screen_visibility:
+    enabled: false
+    screen: screen_a
+    max_distance_m: 8.0
+
+  # --- Phase 5: need a face backend ----------------------------------
+  # backend 'none' is the only one implemented. Setting a real backend while
+  # perception.enrichment.face is off is rejected at startup.
+  gender:
+    enabled: false
+    backend: none
+    every_n_frames: 5
+    vote_window: 15
+    min_confidence: 0.6
+    labels: [male, female]
+
+  age:
+    enabled: false
+    backend: none
+    every_n_frames: 5
+    vote_window: 15
+    min_confidence: 0.6
+    buckets: [[0, 12], [13, 19], [20, 34], [35, 54], [55, 120]]
+
+  mood:
+    enabled: false
+    backend: none
+    every_n_frames: 5
+    vote_window: 15
+    min_confidence: 0.6
+    labels: [neutral, happy, sad, angry, surprised]
+
+aggregation:
+  windows: [1m, 15m, 1h]
+  emit_interval_s: 60.0
+  dedupe_events: true
+
+sinks:
+  console:
+    enabled: true
+    emit: events            # events | metrics | both
+  jsonl:
+    enabled: false
+    path: out/metrics.jsonl
+    rotate_mb: 64
+  ccms:
+    enabled: false
+    # Secrets come from the environment, never from this file.
+    base_url: ${CCMS_URL}
+    api_key: ${CCMS_API_KEY}
+    device_id: ${DEVICE_ID}
+    batch_size: 50
+    timeout_s: 10.0
+    retry: {max_attempts: 5, backoff_s: 2.0}
+    spool_dir: out/spool    # events survive a network outage here
+
+privacy:
+  # Age/gender/mood inference on faces is biometric processing under GDPR and
+  # the DPDP Act. These defaults are the restrictive ones on purpose.
+  store_crops: false
+  blur_faces_in_output: true
+  aggregate_only: true

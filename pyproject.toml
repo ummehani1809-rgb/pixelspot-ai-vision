@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pixelspot"
+version = "0.1.0"
+description = "Edge computer-vision audience analytics for DOOH and retail"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "ultralytics>=8.3,<9",
+    "opencv-python>=4.10",
+    "numpy>=1.26",
+    "pyyaml>=6.0",
+    "pydantic>=2.7,<3",
+    "lap>=0.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+]
+
+[project.scripts]
+pixelspot = "pixelspot.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["pixelspot*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

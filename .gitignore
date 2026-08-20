@@ -1,0 +1,27 @@
+# Environments
+.venv/
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.coverage
+
+# Model weights - large binaries, downloaded or shipped separately.
+# Keep the models/ directory itself so config paths resolve.
+*.pt
+*.onnx
+*.engine
+!models/.gitkeep
+
+# Local site config - config.example.yaml is the tracked reference
+config/config.yaml
+config/sites/
+
+# Runtime output
+out/
+*.log

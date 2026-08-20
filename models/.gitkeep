@@ -1,0 +1,6 @@
+# Keeps models/ in git while the weights themselves stay untracked.
+# Expected contents (see config/config.yaml -> perception.detector.model):
+#   yolo11n.pt        detection + tracking (default)
+#   yolo11l.pt        larger/slower detector
+#   yolo26n.pt        experimental
+#   yolo11n-pose.pt   head-pose enrichment (Phase 5, not yet downloaded)
