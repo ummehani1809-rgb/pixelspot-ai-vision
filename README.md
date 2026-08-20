@@ -53,8 +53,7 @@ Environment overrides use `__` between levels, e.g.
 
 | Status | Capabilities |
 | --- | --- |
-| ✅ Working today | footfall (line crossing), viewing_zone occupancy, vehicle counting/classification |
-| 🔜 Phase 4 — derived from tracks + zones + time, no new models | dwell, crowd_density, traffic_direction, queue, audience_flow, heatmap, parking, anomaly |
+| ✅ Working today | footfall (line crossing), viewing_zone occupancy, vehicle counting/classification, dwell time, crowd_density (people/m²), traffic_direction, queue detection, audience_flow (zone-to-zone), heatmap, parking bays, anomaly rules |
 | ⏳ Phase 5 — need extra models | attention & screen_visibility (head pose), gender/age/mood (face backend) |
 
 Enabling a capability that is not implemented yet logs a warning and is

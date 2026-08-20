@@ -107,7 +107,7 @@ analytics:
     zones: []
     lines: []
 
-  # --- Phase 4: derived from tracks + zones + time, no new model ------
+  # --- derived from tracks + zones + time, no new model needed --------
   dwell:
     enabled: false
     zones: [storefront]
