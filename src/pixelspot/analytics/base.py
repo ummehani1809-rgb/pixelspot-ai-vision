@@ -41,7 +41,9 @@ class Event:
             self.processor,
             self.type,
             self.data.get("track_id"),
-            self.data.get("line_id") or self.data.get("zone_id"),
+            self.data.get("line_id")
+            or self.data.get("zone_id")
+            or self.data.get("rule_id"),
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -68,13 +70,19 @@ class ProcessorOutput:
 
 @dataclass
 class FrameContext:
-    """Everything a processor is allowed to know about the current frame."""
+    """Everything a processor is allowed to know about the current frame.
+
+    ``outputs`` holds what processors *earlier in this frame* concluded, in
+    run order. Most processors never look at it; anomaly runs last on
+    purpose and watches the others' metrics through it.
+    """
 
     index: int
     timestamp: float
     width: int
     height: int
     tracks: list[Track]
+    outputs: dict[str, ProcessorOutput] = field(default_factory=dict)
 
     def of_classes(self, classes: tuple[str, ...] | list[str]) -> list[Track]:
         wanted = {label.lower() for label in classes}

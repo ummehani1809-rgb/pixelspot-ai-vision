@@ -14,11 +14,18 @@ import pytest
 
 from pixelspot.aggregation.aggregator import Aggregator
 from pixelspot.analytics.base import FrameContext
+from pixelspot.analytics.anomaly import AnomalyProcessor
+from pixelspot.analytics.audience_flow import AudienceFlowProcessor
+from pixelspot.analytics.base import ProcessorOutput
 from pixelspot.analytics.crossing import LineCrossingCounter
 from pixelspot.analytics.crowd_density import CrowdDensityProcessor
 from pixelspot.analytics.dwell import DwellProcessor
 from pixelspot.analytics.heatmap import HeatmapProcessor
+from pixelspot.analytics.parking import ParkingProcessor
+from pixelspot.analytics.queue import QueueProcessor
+from pixelspot.analytics import registry
 from pixelspot.analytics.registry import build_processors
+from pixelspot.analytics.traffic_direction import TrafficDirectionProcessor
 from pixelspot.analytics.vehicle import VehicleProcessor
 from pixelspot.analytics.viewing_zone import ViewingZoneProcessor
 from pixelspot.geometry import ResolvedGeometry, ResolvedLine
@@ -476,6 +483,347 @@ def test_unavailable_weight_mode_falls_back_to_presence(caplog):
 
 
 # ==================================================================
+# TRAFFIC DIRECTION
+# ==================================================================
+
+
+def build_traffic(**settings):
+    analytics = dict(CONFIG["analytics"])
+    analytics["traffic_direction"] = {"enabled": True, **settings}
+    config = build_config(analytics=analytics)
+    return TrafficDirectionProcessor.from_config(config, build_geometry(config))
+
+
+def walk(processor, positions, start=100.0, step=0.1, track_id=1):
+    """Run one track through a list of (x, y) positions, one frame per step."""
+    output = None
+    for index, (x, y) in enumerate(positions):
+        output = processor.process(
+            context([track(track_id, x, y)], index=index, timestamp=start + index * step)
+        )
+    return output
+
+
+def test_a_track_moving_right_reads_as_east():
+    traffic = build_traffic(min_speed_px_s=15.0)
+
+    output = walk(traffic, [(100 + i * 30, 500) for i in range(5)])
+
+    assert output.metrics["moving"] == 1
+    assert output.metrics["dominant"] == "E"
+
+
+def test_a_track_moving_down_reads_as_south():
+    traffic = build_traffic()
+
+    output = walk(traffic, [(500, 100 + i * 30) for i in range(5)])
+
+    assert output.metrics["dominant"] == "S"
+
+
+def test_jitter_below_min_speed_is_stationary_not_a_direction():
+    traffic = build_traffic(min_speed_px_s=15.0)
+
+    # 1px per 0.1s frame = 10 px/s, under the 15 px/s floor.
+    output = walk(traffic, [(500 + i, 500) for i in range(5)])
+
+    assert output.metrics["moving"] == 0
+    assert output.metrics["stationary"] == 1
+    assert output.metrics["dominant"] is None
+
+
+# ==================================================================
+# QUEUE
+# ==================================================================
+
+
+def build_queue(**settings):
+    analytics = dict(CONFIG["analytics"])
+    analytics["queue"] = {
+        "enabled": True,
+        "zones": ["storefront"],
+        "min_people": 3,
+        "min_dwell_s": 2.0,
+        "cluster_radius_px": 100,
+        **settings,
+    }
+    config = build_config(analytics=analytics)
+    return QueueProcessor.from_config(config, build_geometry(config))
+
+
+def cluster_tracks(n=3, x=300, y=300, spacing=50):
+    """n people in a line, `spacing` px apart -- inside the storefront zone."""
+    return [track(i + 1, x + i * spacing, y) for i in range(n)]
+
+
+def test_enough_people_waiting_together_forms_a_queue():
+    queue = build_queue()
+
+    queue.process(context(cluster_tracks(), timestamp=100.0))
+    output = queue.process(context(cluster_tracks(), timestamp=103.0))
+
+    assert [event.type for event in output.events] == ["QUEUE_FORMED"]
+    assert output.events[0].data == {"zone_id": "storefront", "length": 3}
+    assert output.metrics["longest_queue"] == 3
+
+
+def test_people_scattered_across_the_zone_are_not_a_queue():
+    queue = build_queue(cluster_radius_px=100)
+
+    # All waiting long enough, but 150px apart: no chain links them.
+    queue.process(context(cluster_tracks(spacing=150), timestamp=100.0))
+    output = queue.process(context(cluster_tracks(spacing=150), timestamp=103.0))
+
+    assert output.events == []
+    assert output.metrics["longest_queue"] == 0
+
+
+def test_people_who_just_arrived_are_not_yet_a_queue():
+    queue = build_queue(min_dwell_s=10.0)
+
+    queue.process(context(cluster_tracks(), timestamp=100.0))
+    output = queue.process(context(cluster_tracks(), timestamp=101.0))
+
+    assert output.events == []
+
+
+def test_a_queue_dissolving_emits_cleared():
+    queue = build_queue()
+
+    queue.process(context(cluster_tracks(), timestamp=100.0))
+    queue.process(context(cluster_tracks(), timestamp=103.0))
+    output = queue.process(context([], timestamp=110.0))
+
+    assert [event.type for event in output.events] == ["QUEUE_CLEARED"]
+    assert output.metrics["queues"] == 0
+
+
+# ==================================================================
+# AUDIENCE FLOW
+# ==================================================================
+
+TWO_ZONE_GEOMETRY = {
+    "zones": [
+        {"id": "a", "points": [[0.1, 0.1], [0.4, 0.1], [0.4, 0.4], [0.1, 0.4]]},
+        {"id": "b", "points": [[0.6, 0.6], [0.9, 0.6], [0.9, 0.9], [0.6, 0.9]]},
+    ],
+    "lines": [{"id": "entrance", "p1": [0.0, 0.4], "p2": [1.0, 0.4]}],
+}
+
+
+def build_flow(**settings):
+    analytics = dict(CONFIG["analytics"])
+    analytics["footfall"] = {"enabled": False}
+    analytics["viewing_zone"] = {"enabled": False}
+    analytics["audience_flow"] = {
+        "enabled": True,
+        "zones": ["a", "b"],
+        "min_transition_s": 0.5,
+        **settings,
+    }
+    config = build_config(analytics=analytics, geometry=TWO_ZONE_GEOMETRY)
+    return AudienceFlowProcessor.from_config(config, build_geometry(config))
+
+
+def test_settling_in_a_new_zone_is_one_transition():
+    flow = build_flow()
+
+    flow.process(context([track(1, 250, 250)], timestamp=100.0))  # in a
+    flow.process(context([track(1, 750, 750)], timestamp=101.0))  # candidate b
+    output = flow.process(context([track(1, 750, 750)], timestamp=102.0))  # settled
+
+    assert [event.type for event in output.events] == ["TRANSITION"]
+    assert output.events[0].data == {"track_id": 1, "from_zone": "a", "zone_id": "b"}
+    assert output.metrics["matrix"] == {"a->b": 1}
+
+
+def test_a_flicker_across_the_boundary_does_not_count():
+    flow = build_flow(min_transition_s=0.5)
+
+    flow.process(context([track(1, 250, 250)], timestamp=100.0))  # in a
+    flow.process(context([track(1, 750, 750)], timestamp=100.1))  # blips into b
+    output = flow.process(context([track(1, 250, 250)], timestamp=100.2))  # back in a
+
+    assert output.events == []
+    assert output.metrics["matrix"] == {}
+
+
+def test_entering_from_outside_any_zone_is_not_a_transition():
+    flow = build_flow(min_transition_s=0.0)
+
+    flow.process(context([track(1, 500, 100)], timestamp=100.0))  # in neither zone
+    output = flow.process(context([track(1, 250, 250)], timestamp=101.0))  # enters a
+
+    assert output.events == []
+    assert output.metrics["matrix"] == {}
+
+
+# ==================================================================
+# PARKING
+# ==================================================================
+
+BAY_GEOMETRY = {
+    "zones": [
+        {
+            "id": "bay_1",
+            "points": [[0.1, 0.1], [0.4, 0.1], [0.4, 0.4], [0.1, 0.4]],
+            "tags": ["parking"],
+        }
+    ],
+    "lines": [{"id": "entrance", "p1": [0.0, 0.4], "p2": [1.0, 0.4]}],
+}
+
+
+def build_parking(**settings):
+    analytics = dict(CONFIG["analytics"])
+    analytics["footfall"] = {"enabled": False}
+    analytics["viewing_zone"] = {"enabled": False}
+    analytics["parking"] = {
+        "enabled": True,
+        "bays": ["bay_1"],
+        "occupied_after_s": 2.0,
+        "vacated_after_s": 2.0,
+        **settings,
+    }
+    config = build_config(analytics=analytics, geometry=BAY_GEOMETRY)
+    return ParkingProcessor.from_config(config, build_geometry(config))
+
+
+def parked_car(present=True):
+    return [track(1, 250, 250, label="car")] if present else []
+
+
+def test_a_car_must_settle_before_the_bay_reads_occupied():
+    parking = build_parking(occupied_after_s=2.0)
+
+    output = parking.process(context(parked_car(), timestamp=100.0))
+    assert output.events == []
+    assert output.metrics["per_bay"] == {"bay_1": "filling"}
+
+    output = parking.process(context(parked_car(), timestamp=103.0))
+    assert [event.type for event in output.events] == ["BAY_OCCUPIED"]
+    assert output.metrics["bays_occupied"] == 1
+
+
+def test_a_drive_through_never_occupies_the_bay():
+    parking = build_parking(occupied_after_s=2.0)
+
+    parking.process(context(parked_car(), timestamp=100.0))
+    output = parking.process(context(parked_car(False), timestamp=100.5))
+
+    assert output.events == []
+    assert output.metrics["per_bay"] == {"bay_1": "vacant"}
+
+
+def test_a_brief_occlusion_does_not_vacate_the_bay():
+    parking = build_parking(occupied_after_s=0.0, vacated_after_s=2.0)
+
+    parking.process(context(parked_car(), timestamp=100.0))
+    parking.process(context(parked_car(), timestamp=101.0))  # occupied
+    parking.process(context(parked_car(False), timestamp=102.0))  # hidden
+    output = parking.process(context(parked_car(), timestamp=103.0))  # visible again
+
+    assert output.metrics["per_bay"] == {"bay_1": "occupied"}
+    assert not any(event.type == "BAY_VACATED" for event in output.events)
+
+
+def test_a_bay_empty_long_enough_emits_vacated():
+    parking = build_parking(occupied_after_s=0.0, vacated_after_s=2.0)
+
+    parking.process(context(parked_car(), timestamp=100.0))
+    parking.process(context(parked_car(), timestamp=101.0))  # occupied
+    parking.process(context(parked_car(False), timestamp=102.0))  # emptying
+    output = parking.process(context(parked_car(False), timestamp=105.0))
+
+    assert [event.type for event in output.events] == ["BAY_VACATED"]
+    assert output.metrics["per_bay"] == {"bay_1": "vacant"}
+    assert output.metrics["bays_free"] == 1
+
+
+# ==================================================================
+# ANOMALY
+# ==================================================================
+
+
+def build_anomaly(*rules):
+    analytics = dict(CONFIG["analytics"])
+    analytics["anomaly"] = {"enabled": True, "rules": list(rules)}
+    config = build_config(analytics=analytics)
+    return AnomalyProcessor.from_config(config, build_geometry(config))
+
+
+def frame_with_metric(value, timestamp=100.0, index=0):
+    ctx = context([], index=index, timestamp=timestamp)
+    ctx.outputs["footfall"] = ProcessorOutput(metrics={"current_occupancy": value})
+    return ctx
+
+
+OCCUPANCY_RULE = {
+    "id": "crowded",
+    "metric": "footfall.current_occupancy",
+    "condition": "above",
+    "threshold": 10,
+}
+
+
+def test_crossing_a_threshold_fires_once_not_every_frame():
+    anomaly = build_anomaly(OCCUPANCY_RULE)
+
+    calm = anomaly.process(frame_with_metric(5, timestamp=100.0))
+    assert calm.events == []
+
+    breach = anomaly.process(frame_with_metric(15, timestamp=101.0))
+    assert [event.type for event in breach.events] == ["ANOMALY"]
+    assert breach.events[0].data["rule_id"] == "crowded"
+    assert breach.metrics["active"] == ["crowded"]
+
+    still_breached = anomaly.process(frame_with_metric(20, timestamp=102.0))
+    assert still_breached.events == []
+
+    recovered = anomaly.process(frame_with_metric(3, timestamp=103.0))
+    assert [event.type for event in recovered.events] == ["ANOMALY_CLEARED"]
+    assert recovered.metrics["active"] == []
+
+
+def test_a_spike_is_judged_against_the_rules_own_history():
+    anomaly = build_anomaly(
+        {
+            "id": "surge",
+            "metric": "footfall.current_occupancy",
+            "condition": "spike",
+            "threshold": 3.0,
+            "window": "10s",
+        }
+    )
+
+    # A steady baseline of 2 for 8 seconds...
+    for step in range(9):
+        output = anomaly.process(frame_with_metric(2, timestamp=100.0 + step))
+        assert output.events == []
+
+    # ...then 10x that: a spike.
+    output = anomaly.process(frame_with_metric(20, timestamp=109.0))
+    assert [event.type for event in output.events] == ["ANOMALY"]
+
+
+def test_a_rule_watching_a_missing_metric_warns_and_stays_silent(caplog):
+    anomaly = build_anomaly(
+        {
+            "id": "ghost",
+            "metric": "nope.nothing",
+            "condition": "above",
+            "threshold": 1,
+        }
+    )
+
+    output = anomaly.process(frame_with_metric(5))
+
+    assert output.events == []
+    assert "not \nreported" not in caplog.text  # sanity: message is one line
+    assert "ghost" in caplog.text and "nope.nothing" in caplog.text
+
+
+# ==================================================================
 # REGISTRY
 # ==================================================================
 
@@ -502,14 +850,18 @@ def test_disabling_a_capability_removes_it_from_the_pipeline():
     assert "viewing_zone" not in names
 
 
-def test_enabled_but_unimplemented_capability_warns_instead_of_failing(caplog):
+def test_enabled_but_unimplemented_capability_warns_instead_of_failing(
+    caplog, monkeypatch
+):
+    # Every real capability is implemented now, so simulate a missing one.
+    monkeypatch.delitem(registry.BUILDERS, "heatmap")
     analytics = dict(CONFIG["analytics"])
-    analytics["traffic_direction"] = {"enabled": True}
+    analytics["heatmap"] = {"enabled": True}
     config = build_config(analytics=analytics)
 
     processors = build_processors(config, build_geometry(config))
 
-    assert "traffic_direction" not in [processor.name for processor in processors]
+    assert "heatmap" not in [processor.name for processor in processors]
     assert "no implementation yet" in caplog.text
 
 

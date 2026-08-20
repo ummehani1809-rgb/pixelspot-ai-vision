@@ -127,10 +127,11 @@ def run_pipeline(config: PixelSpotConfig) -> int:
                 tracks=tracker.track(frame, time.time()),
             )
 
-            outputs = {
-                processor.name: processor.process(context) for processor in processors
-            }
-            sinks.emit_events(aggregator.update(context, outputs))
+            # Filled in run order so later processors (anomaly) can read
+            # what earlier ones concluded about this same frame.
+            for processor in processors:
+                context.outputs[processor.name] = processor.process(context)
+            sinks.emit_events(aggregator.update(context, context.outputs))
 
             if aggregator.due():
                 sinks.emit_metrics(aggregator.snapshot(fps=round(pacer.fps, 2)))

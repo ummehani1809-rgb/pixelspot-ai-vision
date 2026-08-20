@@ -15,11 +15,16 @@ from __future__ import annotations
 
 from typing import Callable
 
+from pixelspot.analytics.anomaly import AnomalyProcessor
+from pixelspot.analytics.audience_flow import AudienceFlowProcessor
 from pixelspot.analytics.base import Processor
 from pixelspot.analytics.crowd_density import CrowdDensityProcessor
 from pixelspot.analytics.dwell import DwellProcessor
 from pixelspot.analytics.footfall import FootfallProcessor
 from pixelspot.analytics.heatmap import HeatmapProcessor
+from pixelspot.analytics.parking import ParkingProcessor
+from pixelspot.analytics.queue import QueueProcessor
+from pixelspot.analytics.traffic_direction import TrafficDirectionProcessor
 from pixelspot.analytics.vehicle import VehicleProcessor
 from pixelspot.analytics.viewing_zone import ViewingZoneProcessor
 from pixelspot.geometry import ResolvedGeometry
@@ -37,6 +42,13 @@ BUILDERS: dict[str, Builder] = {
     "crowd_density": CrowdDensityProcessor.from_config,
     "heatmap": HeatmapProcessor.from_config,
     "vehicles": VehicleProcessor.from_config,
+    "traffic_direction": TrafficDirectionProcessor.from_config,
+    "queue": QueueProcessor.from_config,
+    "audience_flow": AudienceFlowProcessor.from_config,
+    "parking": ParkingProcessor.from_config,
+    # Anomaly watches the other processors' outputs; the config schema
+    # declares it last, so build order alone guarantees it runs last.
+    "anomaly": AnomalyProcessor.from_config,
 }
 
 IMPLEMENTED = frozenset(BUILDERS)
