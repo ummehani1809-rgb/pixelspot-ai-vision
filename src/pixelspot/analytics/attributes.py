@@ -126,6 +126,11 @@ class AttributeProcessor(BaseProcessor):
                 if result is None:
                     continue
                 label, confidence = result
+                log.debug(
+                    "%s: track %d raw %s %.2f (face %dx%d)",
+                    self.name, track.id, label, confidence,
+                    track.face_crop.shape[1], track.face_crop.shape[0],
+                )
                 if confidence < self.min_confidence:
                     continue
                 mapped = self.map_label(label)

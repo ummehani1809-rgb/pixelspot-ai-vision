@@ -177,10 +177,38 @@ class Renderer:
         if self.headless:
             return True
 
+        if not self._window_open:
+            self._open_window(frame.shape[1], frame.shape[0])
         cv2.imshow(self.window_name, frame)
-        self._window_open = True
         key = cv2.waitKey(1) & 0xFF
         return key not in (ord("q"), 27)  # q or Esc
+
+    def _open_window(self, frame_width: int, frame_height: int) -> None:
+        """Open a resizable window no larger than the screen.
+
+        The OpenCV default sizes the window to the frame's exact pixel
+        count, so anything larger than the monitor -- a portrait 4K phone
+        clip, say -- shows only the corner that fits. Scale to fit instead;
+        the operator can still resize or maximise by hand afterwards.
+        """
+        cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
+        screen_width, screen_height = self._screen_bounds()
+        scale = min(screen_width / frame_width, screen_height / frame_height, 1.0)
+        cv2.resizeWindow(
+            self.window_name, int(frame_width * scale), int(frame_height * scale)
+        )
+        self._window_open = True
+
+    @staticmethod
+    def _screen_bounds() -> tuple[int, int]:
+        """Usable screen size, with margin for the taskbar and title bar."""
+        try:
+            import ctypes
+
+            user32 = ctypes.windll.user32
+            return user32.GetSystemMetrics(0) - 80, user32.GetSystemMetrics(1) - 120
+        except (ImportError, AttributeError, OSError):  # not Windows
+            return 1520, 780
 
     def close(self) -> None:
         if self._window_open:
