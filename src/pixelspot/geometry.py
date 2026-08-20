@@ -12,9 +12,10 @@ always means "the side the configured positive direction points at". A crossing
 is then a sign change, identically for every line whatever its angle, and every
 processor that counts crossings shares that one definition.
 
-Screens are deliberately not resolved: no implemented processor consumes them
-yet, and resolving a facing vector before anything reads it would just be
-guesswork frozen into code.
+Screens resolve to a position, a unit facing vector and a viewing cone.
+Distance from the camera is estimated from person height
+(:func:`estimate_distance_m`), because a single uncalibrated camera has no
+better depth cue than "people look smaller further away".
 """
 
 from __future__ import annotations
@@ -147,14 +148,62 @@ class ResolvedLine:
         return start, end
 
 
+# Assumed standing height of a person, for monocular distance estimation.
+_PERSON_HEIGHT_M = 1.7
+
+
+def estimate_distance_m(bbox_height_px: float, frame_height_px: int) -> float | None:
+    """Rough camera-to-person distance from apparent height.
+
+    Pinhole camera with focal length approximated by the frame height (about
+    a 53 degree vertical field of view, typical for a webcam): a 1.7m person
+    filling the frame is ~1.7m away, filling half of it ~3.4m, and so on.
+    Good enough to tell "at the shopfront" from "across the street"; not a
+    tape measure.
+    """
+    if bbox_height_px <= 0:
+        return None
+    return _PERSON_HEIGHT_M * frame_height_px / bbox_height_px
+
+
+@dataclass
+class ResolvedScreen:
+    """A display surface in pixel coordinates with a viewing cone."""
+
+    id: str
+    position: Point
+    facing: Point = (0.0, 1.0)
+    fov_deg: float = 120.0
+    max_distance_m: float | None = None
+
+    def __post_init__(self) -> None:
+        length = math.hypot(*self.facing)
+        self.facing = (self.facing[0] / length, self.facing[1] / length)
+
+    def in_view_cone(self, point: Point) -> bool:
+        """Is *point* inside the wedge the screen faces into?
+
+        A screen showing content at 120 degrees is visible from anywhere in
+        that wedge; someone level with or behind the panel sees its casing.
+        """
+        dx = point[0] - self.position[0]
+        dy = point[1] - self.position[1]
+        distance = math.hypot(dx, dy)
+        if distance == 0:
+            return True
+        cosine = (dx * self.facing[0] + dy * self.facing[1]) / distance
+        return math.degrees(math.acos(max(-1.0, min(1.0, cosine)))) <= self.fov_deg / 2
+
+
 @dataclass
 class ResolvedGeometry:
-    """Every zone and line for this capture resolution, indexed by id."""
+    """Every zone, line and screen for this capture resolution, indexed by id."""
 
     width: int
     height: int
     zones: dict[str, ResolvedZone]
     lines: dict[str, ResolvedLine]
+    screens: dict[str, ResolvedScreen] = field(default_factory=dict)
 
     @classmethod
     def resolve(
@@ -189,7 +238,21 @@ class ResolvedGeometry:
             )
             for line in config.lines
         }
-        return cls(width=width, height=height, zones=zones, lines=lines)
+        screens = {
+            screen.id: ResolvedScreen(
+                id=screen.id,
+                position=to_pixels(screen.position),
+                # Facing is a direction, not a location: normalizing it by the
+                # frame size would bend it on non-square frames.
+                facing=(float(screen.facing[0]), float(screen.facing[1])),
+                fov_deg=screen.fov_deg,
+                max_distance_m=screen.max_distance_m,
+            )
+            for screen in config.screens
+        }
+        return cls(
+            width=width, height=height, zones=zones, lines=lines, screens=screens
+        )
 
     def zone(self, zone_id: str) -> ResolvedZone:
         try:
@@ -207,6 +270,15 @@ class ResolvedGeometry:
             raise ConfigError(
                 f"unknown line {line_id!r} (defined: "
                 f"{', '.join(sorted(self.lines)) or 'none'})"
+            ) from None
+
+    def screen(self, screen_id: str) -> ResolvedScreen:
+        try:
+            return self.screens[screen_id]
+        except KeyError:
+            raise ConfigError(
+                f"unknown screen {screen_id!r} (defined: "
+                f"{', '.join(sorted(self.screens)) or 'none'})"
             ) from None
 
     def select_zones(self, zone_ids: list[str]) -> list[ResolvedZone]:

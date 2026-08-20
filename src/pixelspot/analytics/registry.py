@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Callable
 
 from pixelspot.analytics.anomaly import AnomalyProcessor
+from pixelspot.analytics.attention import AttentionProcessor
 from pixelspot.analytics.audience_flow import AudienceFlowProcessor
 from pixelspot.analytics.base import Processor
 from pixelspot.analytics.crowd_density import CrowdDensityProcessor
@@ -24,6 +25,7 @@ from pixelspot.analytics.footfall import FootfallProcessor
 from pixelspot.analytics.heatmap import HeatmapProcessor
 from pixelspot.analytics.parking import ParkingProcessor
 from pixelspot.analytics.queue import QueueProcessor
+from pixelspot.analytics.screen_visibility import ScreenVisibilityProcessor
 from pixelspot.analytics.traffic_direction import TrafficDirectionProcessor
 from pixelspot.analytics.vehicle import VehicleProcessor
 from pixelspot.analytics.viewing_zone import ViewingZoneProcessor
@@ -46,6 +48,9 @@ BUILDERS: dict[str, Builder] = {
     "queue": QueueProcessor.from_config,
     "audience_flow": AudienceFlowProcessor.from_config,
     "parking": ParkingProcessor.from_config,
+    # Both need head-pose enrichment; the schema enforces that pairing.
+    "attention": AttentionProcessor.from_config,
+    "screen_visibility": ScreenVisibilityProcessor.from_config,
     # Anomaly watches the other processors' outputs; the config schema
     # declares it last, so build order alone guarantees it runs last.
     "anomaly": AnomalyProcessor.from_config,

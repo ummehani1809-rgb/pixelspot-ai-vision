@@ -15,6 +15,7 @@ import pytest
 from pixelspot.aggregation.aggregator import Aggregator
 from pixelspot.analytics.base import FrameContext
 from pixelspot.analytics.anomaly import AnomalyProcessor
+from pixelspot.analytics.attention import AttentionProcessor
 from pixelspot.analytics.audience_flow import AudienceFlowProcessor
 from pixelspot.analytics.base import ProcessorOutput
 from pixelspot.analytics.crossing import LineCrossingCounter
@@ -25,6 +26,7 @@ from pixelspot.analytics.parking import ParkingProcessor
 from pixelspot.analytics.queue import QueueProcessor
 from pixelspot.analytics import registry
 from pixelspot.analytics.registry import build_processors
+from pixelspot.analytics.screen_visibility import ScreenVisibilityProcessor
 from pixelspot.analytics.traffic_direction import TrafficDirectionProcessor
 from pixelspot.analytics.vehicle import VehicleProcessor
 from pixelspot.analytics.viewing_zone import ViewingZoneProcessor
@@ -821,6 +823,173 @@ def test_a_rule_watching_a_missing_metric_warns_and_stays_silent(caplog):
     assert output.events == []
     assert "not \nreported" not in caplog.text  # sanity: message is one line
     assert "ghost" in caplog.text and "nope.nothing" in caplog.text
+
+
+# ==================================================================
+# ATTENTION AND SCREEN VISIBILITY
+# ==================================================================
+
+# A screen at the top centre facing down into the scene, 120 degree cone.
+SCREEN_GEOMETRY = {
+    "zones": [
+        {
+            "id": "storefront",
+            "points": [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]],
+        }
+    ],
+    "lines": [{"id": "entrance", "p1": [0.0, 0.4], "p2": [1.0, 0.4]}],
+    "screens": [
+        {
+            "id": "screen_a",
+            "position": [0.5, 0.0],
+            "facing": [0.0, 1.0],
+            "fov_deg": 120,
+        }
+    ],
+}
+
+HEAD_POSE_PERCEPTION = {
+    "detector": {"classes": ["person", "car", "bus"]},
+    "tracker": {"max_age_s": 2.0},
+    "enrichment": {"head_pose": {"enabled": True}},
+}
+
+
+def viewer(track_id, x, y, yaw, height=400):
+    """A person `height` px tall centred on (x, y), head turned `yaw` degrees."""
+    person = Track(
+        id=track_id,
+        label="person",
+        confidence=0.9,
+        bbox=(int(x - 50), int(y - height / 2), int(x + 50), int(y + height / 2)),
+        hits=10,
+        head_yaw_deg=yaw,
+    )
+    return person
+
+
+def build_attention(**settings):
+    analytics = dict(CONFIG["analytics"])
+    analytics["attention"] = {
+        "enabled": True,
+        "zones": ["storefront"],
+        "screen": "screen_a",
+        "yaw_tolerance_deg": 35.0,
+        "min_gaze_s": 1.0,
+        **settings,
+    }
+    config = build_config(
+        analytics=analytics,
+        geometry=SCREEN_GEOMETRY,
+        perception=HEAD_POSE_PERCEPTION,
+    )
+    return AttentionProcessor.from_config(config, build_geometry(config))
+
+
+def test_a_sustained_frontal_gaze_counts_once():
+    attention = build_attention(min_gaze_s=1.0)
+
+    first = attention.process(context([viewer(1, 500, 500, yaw=5.0)], timestamp=100.0))
+    assert first.metrics["attending"] == 0  # a glance is not attention yet
+
+    held = attention.process(context([viewer(1, 500, 500, yaw=-10.0)], timestamp=101.5))
+    assert held.metrics["attending"] == 1
+    assert [event.type for event in held.events] == ["GAZE"]
+    assert held.events[0].data == {"track_id": 1, "screen_id": "screen_a"}
+
+    ongoing = attention.process(context([viewer(1, 500, 500, yaw=0.0)], timestamp=102.0))
+    assert ongoing.metrics["attending"] == 1
+    assert ongoing.events == []  # same look, no second event
+
+
+def test_a_turned_head_is_not_attention():
+    attention = build_attention()
+
+    attention.process(context([viewer(1, 500, 500, yaw=90.0)], timestamp=100.0))
+    output = attention.process(context([viewer(1, 500, 500, yaw=90.0)], timestamp=102.0))
+
+    assert output.metrics["attending"] == 0
+    assert output.events == []
+
+
+def test_looking_away_and_back_is_a_new_look():
+    attention = build_attention(min_gaze_s=1.0)
+
+    attention.process(context([viewer(1, 500, 500, yaw=0.0)], timestamp=100.0))
+    attention.process(context([viewer(1, 500, 500, yaw=0.0)], timestamp=101.5))  # GAZE 1
+    attention.process(context([viewer(1, 500, 500, yaw=120.0)], timestamp=103.0))
+    attention.process(context([viewer(1, 500, 500, yaw=0.0)], timestamp=104.0))
+    output = attention.process(context([viewer(1, 500, 500, yaw=0.0)], timestamp=105.5))
+
+    assert [event.type for event in output.events] == ["GAZE"]
+    assert output.metrics["gazes_total"] == 2
+
+
+def test_a_person_beside_the_screen_cone_cannot_attend():
+    attention = build_attention()
+
+    # Level with the screen edge: outside the 120 degree wedge.
+    attention.process(context([viewer(1, 150, 120, yaw=0.0)], timestamp=100.0))
+    output = attention.process(context([viewer(1, 150, 120, yaw=0.0)], timestamp=102.0))
+
+    assert output.metrics["attending"] == 0
+
+
+def test_an_unestimated_head_is_never_attending():
+    attention = build_attention()
+
+    attention.process(context([viewer(1, 500, 500, yaw=None)], timestamp=100.0))
+    output = attention.process(context([viewer(1, 500, 500, yaw=None)], timestamp=102.0))
+
+    assert output.metrics["attending"] == 0
+
+
+def build_visibility(**settings):
+    analytics = dict(CONFIG["analytics"])
+    analytics["screen_visibility"] = {
+        "enabled": True,
+        "screen": "screen_a",
+        **settings,
+    }
+    config = build_config(
+        analytics=analytics,
+        geometry=SCREEN_GEOMETRY,
+        perception=HEAD_POSE_PERCEPTION,
+    )
+    return ScreenVisibilityProcessor.from_config(config, build_geometry(config))
+
+
+def test_viewers_are_counted_wherever_they_look():
+    visibility = build_visibility()
+
+    output = visibility.process(
+        context(
+            [
+                viewer(1, 500, 500, yaw=0.0),  # in the cone, facing the screen
+                viewer(2, 600, 500, yaw=180.0),  # in the cone, facing away
+                viewer(3, 150, 120, yaw=0.0),  # beside the cone
+            ]
+        )
+    )
+
+    assert output.metrics["viewers"] == 2
+
+
+def test_a_person_beyond_max_distance_is_not_a_viewer():
+    visibility = build_visibility(max_distance_m=8.0)
+
+    # 400px tall in a 1000px frame is ~4.25m away; 100px is ~17m.
+    output = visibility.process(
+        context(
+            [
+                viewer(1, 500, 500, yaw=0.0, height=400),
+                viewer(2, 600, 500, yaw=0.0, height=100),
+            ]
+        )
+    )
+
+    assert output.metrics["viewers"] == 1
+    assert output.metrics["nearest_m"] == 4.2
 
 
 # ==================================================================

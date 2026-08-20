@@ -45,6 +45,9 @@ class Track:
     confidence: float
     bbox: tuple[int, int, int, int]
     hits: int = 1
+    # Filled by head-pose enrichment when enabled: 0 = facing the camera,
+    # +/-90 = profile, 180 = facing away, None = not estimated.
+    head_yaw_deg: float | None = None
 
     @property
     def center(self) -> tuple[float, float]:
