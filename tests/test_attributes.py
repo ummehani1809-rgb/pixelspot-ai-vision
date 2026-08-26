@@ -17,14 +17,14 @@ from pixelspot.analytics.age import AgeProcessor
 from pixelspot.analytics.attributes import MIN_VOTES, AttributeProcessor
 from pixelspot.analytics.base import FrameContext
 from pixelspot.analytics.gender import GenderProcessor
-from pixelspot.enrichment.face import match_faces_to_tracks
+from pixelspot.enrichment.face import insightface_crop, match_faces_to_tracks
 from pixelspot.settings.schema import PixelSpotConfig
 from pixelspot.tracking.tracker import Track
 
 CROP = np.zeros((64, 64, 3), dtype=np.uint8)
 
 
-def face_track(track_id=1, crop=CROP, bbox=(100, 100, 200, 400)):
+def face_track(track_id=1, crop=CROP, bbox=(100, 100, 200, 400), **fields):
     return Track(
         id=track_id,
         label="person",
@@ -32,6 +32,7 @@ def face_track(track_id=1, crop=CROP, bbox=(100, 100, 200, 400)):
         bbox=bbox,
         hits=10,
         face_crop=crop,
+        **fields,
     )
 
 
@@ -102,6 +103,46 @@ def test_a_person_without_a_face_crop_is_unknown_not_classified():
 
     assert calls == []
     assert output.metrics["unknown"] == 1
+
+
+def test_a_sideways_face_does_not_vote():
+    calls = []
+
+    def classifier(crop):
+        calls.append(crop)
+        return ("male", 0.9)
+
+    processor = build(classifier)
+    output = processor.process(frame([face_track(head_yaw_deg=80.0)]))
+
+    assert calls == []
+    assert output.metrics["unknown"] == 1
+
+
+def test_a_frontal_face_still_votes_when_head_pose_is_on():
+    processor = build(lambda crop: ("male", 0.9))
+
+    for index in range(MIN_VOTES):
+        output = processor.process(
+            frame([face_track(head_yaw_deg=10.0)], index=index)
+        )
+
+    assert output.metrics["male"] == 1
+
+
+def test_a_classifier_that_wants_aligned_gets_the_aligned_crop():
+    aligned = np.ones((96, 96, 3), dtype=np.uint8)
+    received = []
+
+    def classifier(crop):
+        received.append(crop)
+        return ("male", 0.9)
+
+    classifier.wants_aligned = True
+    processor = build(classifier)
+    processor.process(frame([face_track(face_crop_aligned=aligned)]))
+
+    assert received and received[0] is aligned
 
 
 def test_votes_die_with_their_track():
@@ -232,3 +273,28 @@ def test_an_overlapping_pair_gives_the_face_to_the_narrower_box():
     assigned = match_faces_to_tracks(faces, tracks, min_size_px=32)
 
     assert list(assigned) == [2]
+
+
+# ------------------------------------------------------------------
+# InsightFace crop framing
+# ------------------------------------------------------------------
+
+
+def test_insightface_crop_centres_the_face_in_a_model_sized_square():
+    # A white face box on a black frame: after the warp, the face centre
+    # must land at the crop centre and the framing (1.5x the box) must put
+    # black background in the corners.
+    frame_image = np.zeros((480, 640, 3), dtype=np.uint8)
+    frame_image[200:300, 300:400] = 255  # face box at (300, 200), 100x100
+
+    crop = insightface_crop(frame_image, (300.0, 200.0, 100.0, 100.0))
+
+    assert crop.shape == (96, 96, 3)
+    assert crop[48, 48].tolist() == [255, 255, 255]
+    assert crop[2, 2].tolist() == [0, 0, 0]
+
+
+def test_insightface_crop_rejects_a_degenerate_box():
+    frame_image = np.zeros((480, 640, 3), dtype=np.uint8)
+
+    assert insightface_crop(frame_image, (10.0, 10.0, 0.0, 40.0)) is None

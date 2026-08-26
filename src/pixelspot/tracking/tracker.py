@@ -52,6 +52,9 @@ class Track:
     # Filled by face enrichment on detection frames: a BGR crop of this
     # person's face, held in memory for classification only -- never stored.
     face_crop: Any = None
+    # The same face in InsightFace's fixed square framing, for classifiers
+    # trained on that framing. Same lifetime and privacy rules as face_crop.
+    face_crop_aligned: Any = None
 
     @property
     def center(self) -> tuple[float, float]:

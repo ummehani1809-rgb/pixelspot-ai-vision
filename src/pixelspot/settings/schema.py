@@ -26,9 +26,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-# Attribute backends that actually exist. A config asking for "insightface" is
+# Attribute backends that actually exist. A config asking for anything else is
 # a configuration error rather than a feature that silently never runs.
-KNOWN_ATTRIBUTE_BACKENDS = frozenset({"none", "opencv_dnn"})
+KNOWN_ATTRIBUTE_BACKENDS = frozenset({"none", "opencv_dnn", "insightface"})
 
 _DURATION_RE = re.compile(r"^(\d+)(s|m|h|d)$")
 _DURATION_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
@@ -179,7 +179,9 @@ class HeadPoseConfig(_Base):
 class FaceConfig(_Base):
     enabled: bool = False
     model: str | None = None
-    min_size_px: int = Field(32, ge=1)
+    # Below this the classifiers upscale mush and guess; 48px is roughly the
+    # smallest face the 96px attribute models still read reliably.
+    min_size_px: int = Field(48, ge=1)
     every_n_frames: int = Field(5, ge=1)
 
 

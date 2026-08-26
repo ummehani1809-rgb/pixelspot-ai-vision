@@ -35,6 +35,18 @@ log = get_logger(__name__)
 # A majority of fewer than this many votes is a coin toss, not a consensus.
 MIN_VOTES = 3
 
+# Profile faces are where every gender/age model fails hardest -- half the
+# face is missing. When head-pose enrichment is on, a person looking more
+# than this far off-camera does not get classified at all; their next frontal
+# frame will vote instead. None (head-pose off) classifies as before.
+FRONTAL_MAX_YAW_DEG = 30.0
+
+# And a majority that barely wins the window is a coin toss too. A model that
+# flip-flops between two labels on the same face is saying it cannot read
+# this one; a 52/48 split reported as a label would be a guess dressed up as
+# a fact. The winner has to dominate the window before it is reported.
+SETTLE_FRACTION = 2 / 3
+
 # label, confidence -- or None when the classifier abstains.
 Classification = tuple[str, float] | None
 Classifier = Callable[[np.ndarray], Classification]
@@ -85,6 +97,55 @@ class DnnClassifier:
         return self.labels[index], float(scores[index])
 
 
+class InsightFaceGenderAge:
+    """One head of InsightFace's joint gender/age model.
+
+    The model predicts both attributes from one 96x96 face: two gender
+    logits and an age regression scaled to [0, 1]. Each processor wants a
+    plain single-attribute classifier, so this wraps the net once per head
+    -- the model is around a megabyte, so loading it twice costs less than
+    the plumbing to share it would.
+
+    The age head reports the predicted year count as its label (``"27"``)
+    with full confidence: a regression has no softmax to read confidence
+    from, and the vote-over-time window in :class:`AttributeProcessor` is
+    already the noise filter. The processor's ``map_label`` turns years
+    into its configured bucket.
+
+    ``wants_aligned`` asks the processor for the track's InsightFace-framed
+    crop (see :func:`pixelspot.enrichment.face.insightface_crop`) -- the
+    exact square framing this model was trained on -- instead of the padded
+    margin crop the GoogleNet-era models expect.
+    """
+
+    wants_aligned = True
+
+    def __init__(self, model_path: str, head: str):
+        resolved = paths.resolve(model_path)
+        if not resolved.exists():
+            raise ConfigError(f"classifier model not found: {resolved}")
+        log.info("loading model %s (%s head)", resolved, head)
+        self.net = cv2.dnn.readNet(str(resolved))
+        self.head = head
+
+    def __call__(self, face: np.ndarray) -> Classification:
+        blob = cv2.dnn.blobFromImage(face, 1.0, (96, 96), (0.0, 0.0, 0.0), swapRB=True)
+        self.net.setInput(blob)
+        prediction = self.net.forward().flatten().astype(np.float64)
+
+        if self.head == "gender":
+            logits = prediction[:2]  # female, male
+            exps = np.exp(logits - logits.max())
+            probabilities = exps / exps.sum()
+            index = int(probabilities.argmax())
+            return ("female", "male")[index], float(probabilities[index])
+
+        age_years = float(prediction[2]) * 100.0
+        if not 0.0 <= age_years <= 120.0:
+            return None  # the regression only leaves [0, 120] on garbage input
+        return str(int(round(age_years))), 1.0
+
+
 class AttributeProcessor(BaseProcessor):
     """Vote-over-time classification of one attribute per person."""
 
@@ -120,16 +181,23 @@ class AttributeProcessor(BaseProcessor):
 
         if self.classifier is not None and context.index % self.every_n_frames == 0:
             for track in people:
-                if track.face_crop is None:
+                yaw = track.head_yaw_deg
+                if yaw is not None and abs(yaw) > FRONTAL_MAX_YAW_DEG:
                     continue
-                result = self.classifier(track.face_crop)
+                crop = track.face_crop
+                if getattr(self.classifier, "wants_aligned", False):
+                    aligned = getattr(track, "face_crop_aligned", None)
+                    crop = aligned if aligned is not None else crop
+                if crop is None:
+                    continue
+                result = self.classifier(crop)
                 if result is None:
                     continue
                 label, confidence = result
                 log.debug(
                     "%s: track %d raw %s %.2f (face %dx%d)",
                     self.name, track.id, label, confidence,
-                    track.face_crop.shape[1], track.face_crop.shape[0],
+                    crop.shape[1], crop.shape[0],
                 )
                 if confidence < self.min_confidence:
                     continue
@@ -161,7 +229,10 @@ class AttributeProcessor(BaseProcessor):
         votes = self._votes.get(track_id)
         if votes is None or len(votes) < MIN_VOTES:
             return None
-        return Counter(votes).most_common(1)[0][0]
+        label, count = Counter(votes).most_common(1)[0]
+        if count / len(votes) < SETTLE_FRACTION:
+            return None
+        return label
 
     def overlay_lines(self, metrics: dict[str, Any]) -> list[str]:
         parts = [

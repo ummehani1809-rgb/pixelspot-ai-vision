@@ -216,7 +216,7 @@ def test_unimplemented_backend_is_rejected(tmp_path):
     path = write_config(tmp_path, BASE, """
         analytics:
           footfall: {enabled: true, lines: [entrance]}
-          gender: {enabled: true, backend: insightface}
+          gender: {enabled: true, backend: deepface}
     """)
     with pytest.raises(ConfigError, match="unknown backend"):
         load_config(path, environ={})

@@ -16,7 +16,10 @@ which is worse than admitting "unknown".
 
 from __future__ import annotations
 
+import math
+
 import cv2
+import numpy as np
 
 from pixelspot import paths
 from pixelspot.logging_setup import get_logger
@@ -29,6 +32,79 @@ log = get_logger(__name__)
 DEFAULT_MODEL = "models/face_detection_yunet_2023mar.onnx"
 
 FaceBox = tuple[float, float, float, float]  # x, y, w, h
+Landmarks = tuple[tuple[float, float], ...]  # right eye, left eye, nose, mouth corners
+
+# Context kept around the detected face box, as a fraction of its size. The
+# age and gender models were trained on crops that include forehead, hairline
+# and jaw -- the strongest age cues -- so a tight crop starves them.
+CROP_MARGIN = 0.3
+
+# InsightFace's genderage model was trained on one exact framing: a square
+# window centred on the face box, 1.5x its larger side, warped to 96x96 with
+# no rotation. A classifier fed a different framing than it was trained on
+# loses accuracy before it even starts, so this transform is reproduced
+# verbatim rather than approximated with the margin crop above.
+INSIGHTFACE_INPUT = 96
+INSIGHTFACE_BOX_SCALE = 1.5
+
+
+def insightface_crop(frame, box: FaceBox, size: int = INSIGHTFACE_INPUT):
+    """Warp the face into the square crop InsightFace models expect.
+
+    Returns None for a degenerate box. Off-frame regions pad with black,
+    same as InsightFace's own preprocessing.
+    """
+    x, y, w, h = box
+    if w <= 0 or h <= 0:
+        return None
+    scale = size / (max(w, h) * INSIGHTFACE_BOX_SCALE)
+    cx, cy = x + w / 2, y + h / 2
+    matrix = np.array(
+        [[scale, 0.0, size / 2 - scale * cx],
+         [0.0, scale, size / 2 - scale * cy]],
+        dtype=np.float32,
+    )
+    return cv2.warpAffine(frame, matrix, (size, size), flags=cv2.INTER_LINEAR)
+
+
+def align_face_crop(
+    frame, box: FaceBox, landmarks: Landmarks | None, margin: float = CROP_MARGIN
+):
+    """Cut a face crop with context, rotated so the eyes are level.
+
+    The classifiers were trained on aligned faces; a head tilted twenty
+    degrees costs more accuracy than a worse model would. The rotation
+    happens on the padded crop, not the frame, so it stays cheap, and the
+    margin absorbs the corners rotation would otherwise clip.
+
+    Returns None when the padded box has no area (a face at the frame edge).
+    """
+    height, width = frame.shape[:2]
+    x, y, w, h = box
+
+    pad_x, pad_y = w * margin, h * margin
+    x1 = max(0, int(x - pad_x))
+    y1 = max(0, int(y - pad_y))
+    x2 = min(width, int(x + w + pad_x))
+    y2 = min(height, int(y + h + pad_y))
+    if x2 <= x1 or y2 <= y1:
+        return None
+    crop = frame[y1:y2, x1:x2]
+
+    if landmarks is None:
+        return crop.copy()
+
+    (rx, ry), (lx, ly) = landmarks[0], landmarks[1]
+    angle = math.degrees(math.atan2(ly - ry, lx - rx))
+    if abs(angle) < 3.0:  # already level; skip the warp
+        return crop.copy()
+
+    crop_h, crop_w = crop.shape[:2]
+    rotation = cv2.getRotationMatrix2D((crop_w / 2, crop_h / 2), angle, 1.0)
+    return cv2.warpAffine(
+        crop, rotation, (crop_w, crop_h), flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REPLICATE,
+    )
 
 
 def match_faces_to_tracks(
@@ -116,15 +192,26 @@ class FaceFinder:
         if detections is None:
             return
 
-        faces = [tuple(float(v) for v in row[:4]) for row in detections]
-        for track_id, (x, y, w, h) in match_faces_to_tracks(
+        # YuNet rows are x, y, w, h, then five landmark pairs (right eye,
+        # left eye, nose, mouth corners), then the score.
+        faces = []
+        face_landmarks: dict[FaceBox, Landmarks] = {}
+        for row in detections:
+            box = tuple(float(v) for v in row[:4])
+            faces.append(box)
+            if len(row) >= 14:
+                face_landmarks[box] = tuple(
+                    (float(row[i]), float(row[i + 1])) for i in range(4, 14, 2)
+                )
+
+        for track_id, box in match_faces_to_tracks(
             faces, people, self.min_size_px
         ).items():
-            x1, y1 = max(0, int(x)), max(0, int(y))
-            x2, y2 = min(width, int(x + w)), min(height, int(y + h))
-            if x2 <= x1 or y2 <= y1:
+            crop = align_face_crop(frame, box, face_landmarks.get(box))
+            if crop is None:
                 continue
             for track in people:
                 if track.id == track_id:
-                    track.face_crop = frame[y1:y2, x1:x2].copy()
+                    track.face_crop = crop
+                    track.face_crop_aligned = insightface_crop(frame, box)
                     break

@@ -11,11 +11,16 @@ Biometric processing: aggregate counts only, no per-person output.
 
 from __future__ import annotations
 
-from pixelspot.analytics.attributes import AttributeProcessor, DnnClassifier
+from pixelspot.analytics.attributes import (
+    AttributeProcessor,
+    DnnClassifier,
+    InsightFaceGenderAge,
+)
 from pixelspot.geometry import ResolvedGeometry
 from pixelspot.settings.schema import PixelSpotConfig
 
 DEFAULT_MODEL = "models/age_googlenet.onnx"
+INSIGHTFACE_MODEL = "models/genderage.onnx"
 
 # GoogleNet (Adience) output buckets and the midpoint each one stands for.
 MODEL_BUCKETS = [
@@ -46,16 +51,27 @@ class AgeProcessor(AttributeProcessor):
 
         midpoint_of = dict(MODEL_BUCKETS)
 
+        def years_into_bucket(years: float) -> str | None:
+            for (low, high) in settings.buckets:
+                if low <= years <= high:
+                    return bucket_label(low, high)
+            return None  # configured buckets do not cover this age
+
         def into_configured_bucket(model_label: str) -> str | None:
             midpoint = midpoint_of.get(model_label)
             if midpoint is None:
                 return None
-            for (low, high) in settings.buckets:
-                if low <= midpoint <= high:
-                    return bucket_label(low, high)
-            return None  # configured buckets do not cover this age
+            return years_into_bucket(midpoint)
+
+        def prediction_into_bucket(model_label: str) -> str | None:
+            # The InsightFace age head votes with a year count ("27").
+            try:
+                return years_into_bucket(float(model_label))
+            except ValueError:
+                return None
 
         classifier = None
+        map_label = into_configured_bucket
         if settings.backend == "opencv_dnn":  # the schema rejects unknown names
             classifier = DnnClassifier(
                 model_path=settings.model or DEFAULT_MODEL,
@@ -63,11 +79,16 @@ class AgeProcessor(AttributeProcessor):
                 labels=[label for label, _ in MODEL_BUCKETS],
                 mean=(104.0, 117.0, 123.0),
             )
+        elif settings.backend == "insightface":
+            classifier = InsightFaceGenderAge(
+                model_path=settings.model or INSIGHTFACE_MODEL, head="age"
+            )
+            map_label = prediction_into_bucket
         return cls(
             classifier=classifier,
             labels=labels,
             every_n_frames=settings.every_n_frames,
             vote_window=settings.vote_window,
             min_confidence=settings.min_confidence,
-            map_label=into_configured_bucket,
+            map_label=map_label,
         )

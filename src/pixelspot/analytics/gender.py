@@ -12,11 +12,16 @@ schema refuses a real backend unless face enrichment is explicitly on.
 
 from __future__ import annotations
 
-from pixelspot.analytics.attributes import AttributeProcessor, DnnClassifier
+from pixelspot.analytics.attributes import (
+    AttributeProcessor,
+    DnnClassifier,
+    InsightFaceGenderAge,
+)
 from pixelspot.geometry import ResolvedGeometry
 from pixelspot.settings.schema import PixelSpotConfig
 
 DEFAULT_MODEL = "models/gender_googlenet.onnx"
+INSIGHTFACE_MODEL = "models/genderage.onnx"
 
 # GoogleNet output order.
 MODEL_LABELS = ["male", "female"]
@@ -37,6 +42,10 @@ class GenderProcessor(AttributeProcessor):
                 input_size=(224, 224),
                 labels=MODEL_LABELS,
                 mean=(104.0, 117.0, 123.0),
+            )
+        elif settings.backend == "insightface":
+            classifier = InsightFaceGenderAge(
+                model_path=settings.model or INSIGHTFACE_MODEL, head="gender"
             )
         return cls(
             classifier=classifier,

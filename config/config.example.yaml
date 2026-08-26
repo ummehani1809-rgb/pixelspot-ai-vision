@@ -59,7 +59,7 @@ perception:
       min_keypoint_confidence: 0.4
     face:
       enabled: false        # Required by gender/age/mood real backends.
-      min_size_px: 32
+      min_size_px: 48       # Smaller faces are dropped, not guessed at.
       every_n_frames: 5
 
 geometry:
@@ -169,9 +169,11 @@ analytics:
     max_distance_m: 8.0
 
   # --- need perception.enrichment.face + a backend ---------------------
-  # Backends: none | opencv_dnn. opencv_dnn runs entirely on OpenCV with
-  # models in models/ (gender_googlenet.onnx, age_googlenet.onnx, FER+ and
-  # YuNet from the official model zoos). Setting a real backend while
+  # Backends: none | opencv_dnn | insightface. For gender and age prefer
+  # insightface (models/genderage.onnx) -- clearly more accurate than the
+  # opencv_dnn GoogleNet pair, which is a 2015-era model that reads most
+  # adults as "25-32". Mood has no insightface head; it stays on opencv_dnn
+  # (the FER+ model). Setting a real backend while
   # perception.enrichment.face is off is rejected at startup. Biometric
   # processing: see the privacy section below.
   gender:
