@@ -27,6 +27,10 @@ source:
   type: file                # file | webcam | rtsp | http
   uri: datasets/crowd.mp4   # relative paths resolve from the project root
   loop: false
+  realtime: false           # file only: play at the recording's own speed,
+                            # skipping frames when inference cannot keep up
+                            # (like a live camera). false = analyse every
+                            # frame even if playback runs in slow motion.
   reconnect:                # applies to rtsp/http sources
     enabled: true
     initial_backoff_s: 1.0

@@ -112,6 +112,10 @@ class SourceConfig(_Base):
     type: Literal["file", "webcam", "rtsp", "http"] = "file"
     uri: str
     loop: bool = False
+    # File sources only: play the recording at its own speed, skipping frames
+    # inference is too slow to reach -- as a live camera would have. Off means
+    # every frame is analysed even if playback runs slower than real time.
+    realtime: bool = False
     reconnect: ReconnectConfig = Field(default_factory=ReconnectConfig)
     buffer: BufferConfig = Field(default_factory=BufferConfig)
 

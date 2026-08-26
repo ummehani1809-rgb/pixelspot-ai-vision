@@ -26,7 +26,7 @@ from pixelspot.sinks import SinkGroup
 from pixelspot.sinks.base import BaseSink
 from pixelspot.sinks.ccms import CCMSSink
 from pixelspot.sinks.jsonl import JsonlSink
-from pixelspot.source import VideoSource
+from pixelspot.source import PlaybackClock, VideoSource
 
 FRAME_COUNT = 5
 
@@ -86,6 +86,64 @@ def test_relative_paths_resolve_from_the_project_root_not_the_cwd(video, monkeyp
     monkeypatch.chdir(video.parent)
     with pytest.raises(ConfigError):
         VideoSource(SourceConfig(type="file", uri="clip.mp4"))
+
+
+# ==================================================================
+# REAL-TIME FILE PLAYBACK
+# ==================================================================
+
+
+def test_playback_clock_reports_how_far_behind_real_time():
+    times = iter([0.0, 0.5])
+    clock = PlaybackClock(fps=10.0, now=lambda: next(times))
+
+    assert clock.behind() == 0  # first call anchors the clock
+    clock.consume()
+
+    # Half a second in, frame 5 is due and only one frame was taken.
+    assert clock.behind() == 4
+
+
+def test_playback_clock_treats_a_long_stall_as_a_pause_not_debt():
+    times = iter([0.0, 100.0, 100.05])
+    clock = PlaybackClock(fps=10.0, now=lambda: next(times))
+
+    assert clock.behind() == 0
+    clock.consume()
+
+    # A 100 second gap is model warm-up or a debugger, not playback debt.
+    assert clock.behind() == 0
+    clock.consume()
+    assert clock.behind() == 0  # and afterwards the clock is back on pace
+
+
+def test_realtime_file_source_skips_the_frames_it_fell_behind_by(video):
+    source = VideoSource(SourceConfig(type="file", uri=str(video), realtime=True))
+    source.open()
+    times = iter([0.0, 0.35])
+    source._playback = PlaybackClock(fps=10.0, now=lambda: next(times))
+
+    first = source.read()   # anchors the clock
+    second = source.read()  # 0.35s later: frame 3 is due; 1 and 2 are skipped
+    source.release()
+
+    # Frames were written as flat images of value index * 40.
+    assert abs(int(first[0, 0, 0]) - 0) < 20
+    assert abs(int(second[0, 0, 0]) - 120) < 20
+    assert source.frames_skipped == 2
+
+
+def test_file_source_without_realtime_still_delivers_every_frame(video):
+    source = VideoSource(SourceConfig(type="file", uri=str(video)))
+    source.open()
+
+    values = []
+    while (frame := source.read()) is not None:
+        values.append(int(frame[0, 0, 0]))
+    source.release()
+
+    assert len(values) == FRAME_COUNT
+    assert source.frames_skipped == 0
 
 
 # ==================================================================

@@ -18,7 +18,13 @@ what the pipeline gets is the *current* view of the world rather than the
 oldest frame nobody has looked at yet.
 
 Files are read directly with no thread: there is no real-time to fall behind,
-and dropping frames from a recording would silently change the counts.
+and dropping frames from a recording would silently change the counts. The one
+exception is ``source.realtime``: when the operator asks for it, a file is
+played back at its own recorded speed, and frames that inference was too slow
+to reach are skipped just as a live camera would have dropped them. That trades
+the every-frame guarantee for a preview that moves at the speed of the world it
+recorded -- the right trade for demos, the wrong one for offline measurement,
+which is why it is off by default.
 """
 
 from __future__ import annotations
@@ -45,6 +51,49 @@ class SourceError(Exception):
     """Raised when the source cannot be opened or has permanently failed."""
 
 
+class PlaybackClock:
+    """Tracks how far behind real time a file playback has fallen.
+
+    Started on the first frame; :meth:`behind` says how many frames the file
+    should have advanced past what was consumed so far. A gap longer than
+    ``max_stall_s`` is treated as a stall (model warm-up, a debugger, the
+    machine asleep) rather than playback debt: the clock re-anchors and no
+    frames are skipped, because a viewer who pauses a video does not expect
+    it to jump when it resumes.
+    """
+
+    def __init__(self, fps: float, max_stall_s: float = 5.0, now=time.monotonic):
+        self.fps = fps
+        self.max_stall_s = max_stall_s
+        self._now = now
+        self._start: float | None = None
+        self._consumed = 0
+
+    def behind(self) -> int:
+        """Frames to skip before the next read keeps pace with real time."""
+        if self.fps <= 0:
+            return 0
+        now = self._now()
+        if self._start is None:
+            self._start = now
+            return 0
+        expected = int((now - self._start) * self.fps)
+        lag = expected - self._consumed
+        if lag > self.max_stall_s * self.fps:
+            self._start = now - self._consumed / self.fps
+            return 0
+        return max(0, lag)
+
+    def consume(self, count: int = 1) -> None:
+        """Record frames taken from the file, read or skipped."""
+        self._consumed += count
+
+    def restart(self) -> None:
+        """The file looped back to its beginning; start timing afresh."""
+        self._start = None
+        self._consumed = 0
+
+
 class VideoSource:
     """A video input that knows how to reopen itself."""
 
@@ -55,7 +104,9 @@ class VideoSource:
 
         self._capture: cv2.VideoCapture | None = None
         self._reader: _BufferedReader | None = None
+        self._playback: PlaybackClock | None = None
         self._frames_read = 0
+        self.frames_skipped = 0
 
     @classmethod
     def from_config(cls, config: PixelSpotConfig) -> "VideoSource":
@@ -90,6 +141,8 @@ class VideoSource:
                 if self.is_live:
                     self._reader = _BufferedReader(capture, self.config.buffer)
                     self._reader.start()
+                elif self.config.realtime:
+                    self._playback = PlaybackClock(self.native_fps)
                 log.info(
                     "source open: %s %s (%dx%d @ %.1f fps)",
                     self.config.type,
@@ -167,17 +220,30 @@ class VideoSource:
                 return frame
             return self._recover()
 
+        if self._playback is not None:
+            for _ in range(self._playback.behind()):
+                if not self._capture.grab():
+                    break  # end of file; the read below reports it
+                self._playback.consume()
+                self.frames_skipped += 1
+
         success, frame = self._capture.read()
         if success:
             self._frames_read += 1
+            if self._playback is not None:
+                self._playback.consume()
             return frame
 
         if self.config.loop and self._frames_read:
             log.info("source ended after %d frames; looping", self._frames_read)
             self._capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            if self._playback is not None:
+                self._playback.restart()
             success, frame = self._capture.read()
             if success:
                 self._frames_read += 1
+                if self._playback is not None:
+                    self._playback.consume()
                 return frame
 
         return None
@@ -199,6 +265,11 @@ class VideoSource:
         return self.read()
 
     def release(self) -> None:
+        if self.frames_skipped:
+            log.info(
+                "skipped %d frame(s) to keep playback at the recording's speed",
+                self.frames_skipped,
+            )
         if self._reader is not None:
             self._reader.stop()
             self._reader = None
